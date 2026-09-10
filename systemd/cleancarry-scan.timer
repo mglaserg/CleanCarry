@@ -1,0 +1,10 @@
+[Unit]
+Description=Run CleanCarry scanner hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=45
+
+[Install]
+WantedBy=timers.target

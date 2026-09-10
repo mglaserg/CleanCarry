@@ -1,0 +1,10 @@
+[Unit]
+Description=Snapshot CleanCarry account every 15 minutes
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+RandomizedDelaySec=20
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,18 @@
+[Unit]
+Description=CleanCarry Hyperliquid scanner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=cleancarry
+Group=cleancarry
+WorkingDirectory=/opt/cleancarry
+EnvironmentFile=/opt/cleancarry/.env
+ExecStart=/opt/cleancarry/.venv/bin/cleancarry opportunities --limit 50
+StandardOutput=append:/opt/cleancarry/logs/scan.log
+StandardError=append:/opt/cleancarry/logs/scan.err.log
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/cleancarry/data /opt/cleancarry/logs /opt/cleancarry/state

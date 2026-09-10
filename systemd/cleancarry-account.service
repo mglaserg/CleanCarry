@@ -1,0 +1,18 @@
+[Unit]
+Description=CleanCarry Hyperliquid account snapshot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=cleancarry
+Group=cleancarry
+WorkingDirectory=/opt/cleancarry
+EnvironmentFile=/opt/cleancarry/.env
+ExecStart=/opt/cleancarry/.venv/bin/cleancarry status
+StandardOutput=append:/opt/cleancarry/logs/account.log
+StandardError=append:/opt/cleancarry/logs/account.err.log
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/cleancarry/data /opt/cleancarry/logs /opt/cleancarry/state

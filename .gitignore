@@ -1,0 +1,14 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+data/raw/*.parquet
+data/derived/*.parquet
+logs/*
+state/*
+!data/raw/.gitkeep
+!data/derived/.gitkeep
+!logs/.gitkeep
+!state/.gitkeep
