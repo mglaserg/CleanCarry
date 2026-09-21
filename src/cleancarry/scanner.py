@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import math
 import statistics
-from dataclasses import asdict
-from typing import Any, Iterable
+from typing import Any
+
+import httpx
 
 from .config import Settings
 from .hyperliquid import HyperliquidInfoClient
@@ -250,16 +251,16 @@ def scan(client: HyperliquidInfoClient, settings: Settings) -> tuple[list[CarryM
         if coin in history_names:
             try:
                 histories[coin] = client.funding_history(coin, start, now)
-            except Exception:
+            except (httpx.HTTPError, ValueError):
                 histories[coin] = []
         if coin in book_names:
             try:
                 perp_spread = _book_spread_bps(client.l2_book(coin))
-            except Exception:
+            except (httpx.HTTPError, ValueError):
                 perp_spread = None
             try:
                 spot_spread = _book_spread_bps(client.l2_book(row["spot_market"]))
-            except Exception:
+            except (httpx.HTTPError, ValueError):
                 spot_spread = None
             spreads[coin] = (spot_spread, perp_spread)
 

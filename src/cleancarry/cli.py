@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 import typer
@@ -12,6 +11,7 @@ from .account import summarize_account
 from .archive import upsert_timeseries, write_snapshot
 from .config import Settings
 from .hyperliquid import HyperliquidInfoClient
+from .research import StudyConfig, run_carry_study
 from .scanner import (
     normalize_perp_contexts,
     normalize_predicted,
@@ -128,10 +128,14 @@ def funding(days: int = typer.Option(7, min=1, max=90)) -> None:
     s = _settings()
     if not s.account_address:
         raise typer.BadParameter("Set HL_ACCOUNT_ADDRESS first.")
-    end = datetime.now(timezone.utc)
+    end = datetime.now(UTC)
     start = end - timedelta(days=days)
     with HyperliquidInfoClient(s.base_url) as client:
-        rows = client.user_funding(s.account_address, int(start.timestamp() * 1000), int(end.timestamp() * 1000))
+        rows = client.user_funding(
+            s.account_address,
+            int(start.timestamp() * 1000),
+            int(end.timestamp() * 1000),
+        )
     if not rows:
         console.print("No funding rows returned.")
         return
@@ -150,12 +154,71 @@ def funding(days: int = typer.Option(7, min=1, max=90)) -> None:
 
 
 @app.command()
+def replay(
+    coin: str = typer.Argument(..., help="Perpetual coin name, for example BTC."),
+    as_of_utc: str | None = typer.Option(
+        None,
+        "--as-of-utc",
+        help="Inclusive timezone-aware decision cutoff, for example 2026-09-21T12:00:00Z.",
+    ),
+    notional_usd: float = typer.Option(1_000.0, min=1.0),
+    minimum_trades: int = typer.Option(20, min=1),
+) -> None:
+    """Replay one archived carry pair and save a reproducible model comparison."""
+    s = _settings()
+    try:
+        cutoff = _parse_utc(as_of_utc) if as_of_utc is not None else None
+        result = run_carry_study(
+            derived_dir=s.data_dir / "derived",
+            output_root=s.data_dir / "derived" / "studies",
+            settings=s,
+            config=StudyConfig(
+                coin=coin,
+                as_of_utc=cutoff,
+                notional_usd=notional_usd,
+                entry_net_apr=s.min_net_apr,
+                exit_net_apr=s.exit_net_apr,
+                minimum_trades_for_decision=minimum_trades,
+            ),
+        )
+    except (OSError, ValueError) as error:
+        raise typer.BadParameter(str(error)) from error
+
+    table = Table(title=f"CleanCarry replay — {coin.upper()}")
+    table.add_column("Model")
+    table.add_column("Trades", justify="right")
+    table.add_column("Funding", justify="right")
+    table.add_column("Spot", justify="right")
+    table.add_column("Perp", justify="right")
+    table.add_column("Costs", justify="right")
+    table.add_column("Net", justify="right")
+    for name in ("ensemble", "current_only"):
+        summary = result.summaries[name]
+        costs = summary.total_fee_cost_usd + summary.total_slippage_cost_usd
+        table.add_row(
+            name,
+            str(summary.trade_count),
+            _money(summary.total_funding_pnl_usd),
+            _money(summary.total_spot_pnl_usd),
+            _money(summary.total_perp_pnl_usd),
+            _money(costs),
+            _money(summary.total_net_pnl_usd),
+        )
+    console.print(table)
+    console.print(f"[bold]Decision: {result.decision}[/bold] — {result.decision_reason}")
+    console.print(f"Manifest: {result.manifest_path}")
+
+
+@app.command()
 def live() -> None:
     """Safety latch: M1 intentionally cannot send orders."""
     s = _settings()
     if not s.live_trading_enabled:
         console.print("[yellow]LIVE_TRADING_ENABLED=false. Live trading is disarmed.[/yellow]")
-    console.print("[bold]M1 contains no order-sending code by design.[/bold] Complete paper/reconciliation milestone first.")
+    console.print(
+        "[bold]M1 contains no order-sending code by design.[/bold] "
+        "Complete paper/reconciliation milestone first."
+    )
     raise typer.Exit(code=2)
 
 
@@ -179,6 +242,13 @@ def _money(x: float | None) -> str:
     if abs(x) >= 1_000:
         return f"${x/1_000:.1f}k"
     return f"${x:,.2f}"
+
+
+def _parse_utc(value: str) -> datetime:
+    timestamp = pd.Timestamp(value)
+    if timestamp.tzinfo is None:
+        raise ValueError("--as-of-utc must include a timezone, such as Z or +00:00")
+    return timestamp.tz_convert("UTC").to_pydatetime()
 
 
 if __name__ == "__main__":

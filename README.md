@@ -8,6 +8,15 @@ CleanCarry looks for same-venue delta-neutral carry candidates:
 
 The first milestone deliberately does **not** send orders. It establishes the market-data archive, spot/perp universe intersection, funding forecast baseline, cost-aware opportunity score, account-state reader, realized-funding archive, tests, and systemd scheduling.
 
+## Project documentation
+
+- [`PROJECT_STATUS.md`](PROJECT_STATUS.md) — current truth, verification, gaps, and immediate work.
+- [`ROADMAP.md`](ROADMAP.md) — capability milestones and promotion gates.
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — boundaries, runtime flow, data model, units, and invariants.
+- [`AGENTS.md`](AGENTS.md) — operating contract for coding agents and contributors.
+- [`CHANGELOG.md`](CHANGELOG.md) — concise history of meaningful changes.
+- [`docs/adr/`](docs/adr/) — durable architecture decisions.
+
 ## What works now
 
 - Discovers the Hyperliquid perp universe and USDC-quoted spot universe dynamically.
@@ -91,6 +100,17 @@ Archive realized funding:
 sudo -u cleancarry /opt/cleancarry/.venv/bin/cleancarry funding --days 7
 ```
 
+Replay one archived pair through an inclusive UTC cutoff:
+
+```bash
+sudo -u cleancarry /opt/cleancarry/.venv/bin/cleancarry replay BTC \
+  --as-of-utc 2026-09-21T12:00:00Z
+```
+
+The replay compares the funding ensemble with a current-funding-only baseline and writes a versioned
+manifest, summary, and trade-level Parquet files under `data/derived/studies/`. A study decision is
+research evidence only; it does not enable live trading.
+
 Enable unattended snapshots only after the manual commands work:
 
 ```bash
@@ -120,6 +140,11 @@ data/raw/
 data/derived/
   carry_markets_*.parquet
   opportunities_*.parquet
+  studies/<STUDY_ID>/
+    manifest.json
+    summary.json
+    trades_ensemble.parquet
+    trades_current_only.parquet
 ```
 
 ## Safety boundary
@@ -130,7 +155,8 @@ Before Milestone 4 live trading, we will add separate signing/execution code beh
 
 ## Next milestone: historical carry simulator
 
-Milestone 2 will build a replay from archived/historical funding + spot/perp prices and answer the questions that matter before paper trading:
+The canonical scope and promotion gate live in [`ROADMAP.md`](ROADMAP.md). The simulator will use
+the archive to answer:
 
 1. How persistent is positive funding after a candidate passes the scanner?
 2. What holding horizon actually maximizes realized net carry after costs?
@@ -139,4 +165,5 @@ Milestone 2 will build a replay from archived/historical funding + spot/perp pri
 5. Does the simple funding ensemble beat current funding alone?
 6. What liquidity/basis/funding-volatility filters materially improve realized carry?
 
-Then: M3 paper portfolio + hedge/reconciliation ledger. M4 tiny live subaccount.
+Only evidence that passes that gate advances to M3 paper/reconciliation and, later, a separately
+approved M4 tiny live subaccount.

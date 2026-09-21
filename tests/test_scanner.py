@@ -1,6 +1,11 @@
 from cleancarry.config import Settings
 from cleancarry.models import CarryMarket
-from cleancarry.scanner import build_intersection, expected_funding_rate, parse_predicted_fundings, score_market
+from cleancarry.scanner import (
+    build_intersection,
+    expected_funding_rate,
+    parse_predicted_fundings,
+    score_market,
+)
 
 
 def test_predicted_fundings_prefers_hyperliquid():

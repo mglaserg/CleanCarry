@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from collections.abc import Iterable, Mapping
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterable, Mapping, Any
+from typing import Any
 
 import pandas as pd
 
 
 def utc_stamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
 def write_snapshot(rows: Iterable[Mapping[str, Any]], directory: Path, stem: str) -> Path:
@@ -16,7 +17,7 @@ def write_snapshot(rows: Iterable[Mapping[str, Any]], directory: Path, stem: str
     path = directory / f"{stem}_{utc_stamp()}.parquet"
     frame = pd.DataFrame(list(rows))
     if "observed_at_utc" not in frame.columns:
-        frame["observed_at_utc"] = datetime.now(timezone.utc).isoformat()
+        frame["observed_at_utc"] = datetime.now(UTC).isoformat()
     frame.to_parquet(path, index=False)
     return path
 

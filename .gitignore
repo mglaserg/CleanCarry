@@ -6,6 +6,7 @@ __pycache__/
 .ruff_cache/
 data/raw/*.parquet
 data/derived/*.parquet
+data/derived/studies/
 logs/*
 state/*
 !data/raw/.gitkeep

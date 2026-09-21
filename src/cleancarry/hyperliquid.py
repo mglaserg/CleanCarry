@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, Self
 
 import httpx
 
@@ -16,7 +16,7 @@ class HyperliquidInfoClient:
     def close(self) -> None:
         self._client.close()
 
-    def __enter__(self) -> "HyperliquidInfoClient":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_: object) -> None:
