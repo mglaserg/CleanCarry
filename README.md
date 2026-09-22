@@ -86,6 +86,16 @@ cannot use one, instead of attempting a local Arrow build. It creates `.env` bef
 installation and preserves `.env`, archived data, state, logs, and the uv cache on reruns.
 Rerun the installer after updating this repository to copy the `uv`-based service units and reload
 `systemd`. A service that is already running uses its previous process until it is restarted.
+`.env` is hidden from a plain `ls`; verify it with `sudo stat /opt/cleancarry/.env`. If a previous
+install left it missing or zero bytes, populate it without overwriting a nonempty configuration:
+
+```bash
+sudo test -s /opt/cleancarry/.env || sudo install -o cleancarry -g cleancarry -m 600 \
+  /opt/cleancarry/.env.example /opt/cleancarry/.env
+```
+
+The example leaves account addresses and the API wallet key blank because those values are specific
+to your account. Fill them in with `sudoedit /opt/cleancarry/.env`.
 
 Set at least:
 

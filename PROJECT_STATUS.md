@@ -45,9 +45,9 @@ CleanCarry should answer:
   shadow cycles, paper status/control, and separately armed direct live execution.
 - Lubuntu collection timers and a hardened long-running autonomous shadow service.
 - A `uv`-managed Lubuntu installer using a committed lockfile, with upgrade-safe preservation of
-  operator configuration and runtime evidence. It creates `.env` before dependency sync so an
-  interrupted install still leaves a file to configure; Python 3.12 and a binary PyArrow wheel are
-  required to avoid local Arrow compilation.
+  operator configuration and runtime evidence. It creates or initializes an empty `.env` before
+  dependency sync while preserving nonempty configuration; Python 3.12 and a binary PyArrow wheel
+  are required to avoid local Arrow compilation.
 - All Lubuntu `systemd` services now launch through `uv run --frozen --no-sync`; contributor
   verification and documented operator commands also use `uv`.
 - Direct Hyperliquid API-wallet execution is implemented behind environment and persistent arming,

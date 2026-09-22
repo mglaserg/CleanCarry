@@ -37,13 +37,21 @@ if [[ ! -e "$APP_DIR/.env" ]]; then
   sudo install -o "$APP_USER" -g "$APP_USER" -m 600 \
     "$APP_DIR/.env.example" "$APP_DIR/.env"
   echo "Created $APP_DIR/.env from .env.example"
+elif ! sudo test -s "$APP_DIR/.env"; then
+  sudo install -o "$APP_USER" -g "$APP_USER" -m 600 \
+    "$APP_DIR/.env.example" "$APP_DIR/.env"
+  echo "Initialized empty $APP_DIR/.env from .env.example"
 else
-  echo "Preserved existing $APP_DIR/.env"
+  echo "Preserved existing nonempty $APP_DIR/.env"
 fi
 sudo chown "$APP_USER:$APP_USER" "$APP_DIR/.env"
 sudo chmod 600 "$APP_DIR/.env"
 sudo test -f "$APP_DIR/.env" || {
   echo "Missing regular configuration file: $APP_DIR/.env" >&2
+  exit 1
+}
+sudo test -s "$APP_DIR/.env" || {
+  echo "Configuration file is empty: $APP_DIR/.env" >&2
   exit 1
 }
 
@@ -67,9 +75,14 @@ sudo -u "$APP_USER" env \
 sudo cp "$APP_DIR"/systemd/cleancarry-*.service /etc/systemd/system/
 sudo cp "$APP_DIR"/systemd/cleancarry-*.timer /etc/systemd/system/
 sudo systemctl daemon-reload
+sudo -u "$APP_USER" test -r "$APP_DIR/.env" || {
+  echo "Configuration is not readable by $APP_USER: $APP_DIR/.env" >&2
+  exit 1
+}
 
 echo
 echo "Installed to $APP_DIR with $($UV_BIN --version)"
+sudo stat -c 'Configuration verified: %n (mode %a, owner %U:%G)' "$APP_DIR/.env"
 echo "Next: sudoedit $APP_DIR/.env"
 echo "Test: sudo -u $APP_USER env HOME=$APP_DIR UV_CACHE_DIR=$APP_DIR/.cache/uv $UV_BIN run --project $APP_DIR --frozen --no-sync cleancarry opportunities"
 echo "Then enable timers: sudo systemctl enable --now cleancarry-scan.timer cleancarry-account.timer"

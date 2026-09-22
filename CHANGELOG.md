@@ -41,6 +41,10 @@ behavior, safety, and architecture changes rather than listing every edited file
 
 - Route all four Lubuntu `systemd` services through the locked `uv run` environment and replace
   pip-based contributor verification commands with `uv` equivalents.
+- Verify at install completion that the `cleancarry` user can read `.env` and print its path,
+  ownership, and permissions without revealing configuration values.
+- Initialize a pre-existing zero-byte `.env` from the example; preserve nonempty operator
+  configuration on reinstall.
 - Create `/opt/cleancarry/.env` before the `uv` dependency sync and fail explicitly if the
   configuration file is missing; preserve existing configuration on reinstall.
 - Pin the Lubuntu environment to Python 3.12 and require a binary PyArrow wheel to avoid an
