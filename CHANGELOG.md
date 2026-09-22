@@ -39,6 +39,8 @@ behavior, safety, and architecture changes rather than listing every edited file
 
 ### Changed
 
+- Route all four Lubuntu `systemd` services through the locked `uv run` environment and replace
+  pip-based contributor verification commands with `uv` equivalents.
 - Create `/opt/cleancarry/.env` before the `uv` dependency sync and fail explicitly if the
   configuration file is missing; preserve existing configuration on reinstall.
 - Pin the Lubuntu environment to Python 3.12 and require a binary PyArrow wheel to avoid an

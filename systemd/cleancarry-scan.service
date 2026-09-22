@@ -9,10 +9,12 @@ User=cleancarry
 Group=cleancarry
 WorkingDirectory=/opt/cleancarry
 EnvironmentFile=/opt/cleancarry/.env
-ExecStart=/opt/cleancarry/.venv/bin/cleancarry opportunities --limit 50
+Environment=HOME=/opt/cleancarry
+Environment=UV_CACHE_DIR=/opt/cleancarry/.cache/uv
+ExecStart=/usr/local/bin/uv run --project /opt/cleancarry --frozen --no-sync cleancarry opportunities --limit 50
 StandardOutput=append:/opt/cleancarry/logs/scan.log
 StandardError=append:/opt/cleancarry/logs/scan.err.log
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/opt/cleancarry/data /opt/cleancarry/logs /opt/cleancarry/state
+ReadWritePaths=/opt/cleancarry/data /opt/cleancarry/logs /opt/cleancarry/state /opt/cleancarry/.cache/uv

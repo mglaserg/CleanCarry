@@ -9,14 +9,16 @@ User=cleancarry
 Group=cleancarry
 WorkingDirectory=/opt/cleancarry
 EnvironmentFile=/opt/cleancarry/.env
-ExecStart=/opt/cleancarry/.venv/bin/cleancarry live
+Environment=HOME=/opt/cleancarry
+Environment=UV_CACHE_DIR=/opt/cleancarry/.cache/uv
+ExecStart=/usr/local/bin/uv run --project /opt/cleancarry --frozen --no-sync cleancarry live
 Restart=no
 StandardOutput=append:/opt/cleancarry/logs/live.log
 StandardError=append:/opt/cleancarry/logs/live.err.log
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/opt/cleancarry/data /opt/cleancarry/logs /opt/cleancarry/state
+ReadWritePaths=/opt/cleancarry/data /opt/cleancarry/logs /opt/cleancarry/state /opt/cleancarry/.cache/uv
 
 [Install]
 WantedBy=multi-user.target

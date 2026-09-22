@@ -84,6 +84,8 @@ binary in `/usr/local/bin`, selects Python 3.12, and syncs the committed `uv.loc
 `/opt/cleancarry/.venv`. It requires a prebuilt PyArrow wheel and reports an error if the platform
 cannot use one, instead of attempting a local Arrow build. It creates `.env` before dependency
 installation and preserves `.env`, archived data, state, logs, and the uv cache on reruns.
+Rerun the installer after updating this repository to copy the `uv`-based service units and reload
+`systemd`. A service that is already running uses its previous process until it is restarted.
 
 Set at least:
 

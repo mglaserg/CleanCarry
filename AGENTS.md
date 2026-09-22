@@ -24,15 +24,17 @@ long canonical USDC spot + short equal-dollar perpetual
 ```
 
 The project should earn the right to trade through archived evidence, historical replay, and
-paper reconciliation. It is currently a read-only research and account-observation tool.
+paper reconciliation. A separately armed direct live adapter exists under ADR 0006; its evidence
+gates remain incomplete.
 
 ## Non-negotiable boundaries
 
 - Milestones 1 and 2 are read-only. They must not accept private keys, sign payloads, or submit,
   amend, or cancel orders.
-- `cleancarry live` remains an explicit hard stop until the live-execution milestone is approved
-  and implemented with its own architecture decision record.
-- Venue access in the current product goes through Hyperliquid's public `/info` API only.
+- Direct live execution requires the independent arming, account binding, and hard limits in ADR
+  0006; read-only and shadow paths never construct its signer.
+- Research and account observation use Hyperliquid's public `/info` API. Only the separately armed
+  live adapter may submit signed actions through `/exchange`.
 - Eligible carry pairs use the same venue, a canonical USDC spot market, and an explicitly mapped
   matching perpetual. Do not guess symbol aliases.
 - Missing predicted funding, funding history, or observed book spread fails eligibility closed.
@@ -125,15 +127,15 @@ Tiny typo-only edits do not require every file. Do not create competing status o
 From the repository root:
 
 ```bash
-python -m pytest
-python -m ruff check .
+uv sync --locked --extra dev
+uv run --frozen pytest
+uv run --frozen ruff check .
 ```
 
 When validating packaging or CLI wiring:
 
 ```bash
-python -m pip install -e ".[dev]"
-cleancarry --help
+uv run --frozen cleancarry --help
 ```
 
 Live API smoke tests are optional and network-dependent. Never make them a unit-test prerequisite,
