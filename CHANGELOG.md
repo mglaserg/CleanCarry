@@ -39,6 +39,10 @@ behavior, safety, and architecture changes rather than listing every edited file
 
 ### Changed
 
+- Create `/opt/cleancarry/.env` before the `uv` dependency sync and fail explicitly if the
+  configuration file is missing; preserve existing configuration on reinstall.
+- Pin the Lubuntu environment to Python 3.12 and require a binary PyArrow wheel to avoid an
+  unsupported source build during installation.
 - Replaced the Lubuntu `python3-venv`/`pip` bootstrap with a pinned system-wide `uv` install and a
   locked production sync; reinstalls now preserve operator configuration and runtime evidence.
 - Cleared the existing Ruff baseline and narrowed per-market upstream exception handling to expected

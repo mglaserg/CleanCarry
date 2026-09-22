@@ -80,9 +80,10 @@ sudoedit /opt/cleancarry/.env
 ```
 
 The installer uses `uv` exclusively for Python and dependency management. It installs a pinned `uv`
-binary in `/usr/local/bin`, syncs the committed `uv.lock` into `/opt/cleancarry/.venv`, and does not
-install or modify Ubuntu's `python3-pip` packages. Re-running it preserves `.env`, archived data,
-state, logs, and the uv cache.
+binary in `/usr/local/bin`, selects Python 3.12, and syncs the committed `uv.lock` into
+`/opt/cleancarry/.venv`. It requires a prebuilt PyArrow wheel and reports an error if the platform
+cannot use one, instead of attempting a local Arrow build. It creates `.env` before dependency
+installation and preserves `.env`, archived data, state, logs, and the uv cache on reruns.
 
 Set at least:
 

@@ -14,17 +14,6 @@ fi
 sudo apt-get update
 sudo apt-get install -y ca-certificates curl rsync
 
-if [[ ! -x "$UV_BIN" ]]; then
-  uv_installer="$(mktemp)"
-  trap 'rm -f "$uv_installer"' EXIT
-  curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" -o "$uv_installer"
-  sudo env UV_UNMANAGED_INSTALL=/usr/local/bin sh "$uv_installer"
-  rm -f "$uv_installer"
-  trap - EXIT
-fi
-
-"$UV_BIN" --version
-
 if ! id "$APP_USER" >/dev/null 2>&1; then
   sudo useradd --system --create-home --home-dir "$APP_DIR" --shell /usr/sbin/nologin "$APP_USER"
 fi
@@ -44,15 +33,36 @@ sudo rsync -a \
   ./ "$APP_DIR/"
 sudo chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 
+if [[ ! -e "$APP_DIR/.env" ]]; then
+  sudo install -o "$APP_USER" -g "$APP_USER" -m 600 \
+    "$APP_DIR/.env.example" "$APP_DIR/.env"
+  echo "Created $APP_DIR/.env from .env.example"
+else
+  echo "Preserved existing $APP_DIR/.env"
+fi
+sudo chown "$APP_USER:$APP_USER" "$APP_DIR/.env"
+sudo chmod 600 "$APP_DIR/.env"
+sudo test -f "$APP_DIR/.env" || {
+  echo "Missing regular configuration file: $APP_DIR/.env" >&2
+  exit 1
+}
+
+if [[ ! -x "$UV_BIN" ]]; then
+  uv_installer="$(mktemp)"
+  trap 'rm -f "$uv_installer"' EXIT
+  curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" -o "$uv_installer"
+  sudo env UV_UNMANAGED_INSTALL=/usr/local/bin sh "$uv_installer"
+  rm -f "$uv_installer"
+  trap - EXIT
+fi
+
+"$UV_BIN" --version
+
 sudo -u "$APP_USER" env \
   HOME="$APP_DIR" \
   UV_CACHE_DIR="$APP_DIR/.cache/uv" \
-  "$UV_BIN" sync --project "$APP_DIR" --locked --no-dev --no-editable
-
-if [[ ! -f "$APP_DIR/.env" ]]; then
-  sudo -u "$APP_USER" cp "$APP_DIR/.env.example" "$APP_DIR/.env"
-fi
-sudo chmod 600 "$APP_DIR/.env"
+  "$UV_BIN" sync --project "$APP_DIR" --python 3.12 --locked --no-dev \
+    --no-editable --no-build-package pyarrow
 
 sudo cp "$APP_DIR"/systemd/cleancarry-*.service /etc/systemd/system/
 sudo cp "$APP_DIR"/systemd/cleancarry-*.timer /etc/systemd/system/

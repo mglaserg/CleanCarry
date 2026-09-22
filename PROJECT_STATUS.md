@@ -45,7 +45,9 @@ CleanCarry should answer:
   shadow cycles, paper status/control, and the hard-stop `live` command.
 - Lubuntu collection timers and a hardened long-running autonomous shadow service.
 - A `uv`-managed Lubuntu installer using a committed lockfile, with upgrade-safe preservation of
-  operator configuration and runtime evidence.
+  operator configuration and runtime evidence. It creates `.env` before dependency sync so an
+  interrupted install still leaves a file to configure; Python 3.12 and a binary PyArrow wheel are
+  required to avoid local Arrow compilation.
 - Direct Hyperliquid API-wallet execution is implemented behind environment and persistent arming,
   hard live caps, paired-leg recovery, reconciliation, and safe mode; it was not live-tested.
 
