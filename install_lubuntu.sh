@@ -11,6 +11,11 @@ if [[ $EUID -eq 0 ]]; then
   exit 1
 fi
 
+if systemctl is-active --quiet cleancarry-live.service; then
+  echo "CleanCarry live is active. Inspect open spot/perp exposure and stop the service before upgrading." >&2
+  exit 1
+fi
+
 sudo apt-get update
 sudo apt-get install -y ca-certificates curl rsync
 

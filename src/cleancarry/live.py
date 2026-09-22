@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
+import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -43,15 +45,46 @@ class LiveState:
 class LiveStateStore:
     def __init__(self, state_dir: Path) -> None:
         self.path = state_dir / "live_state.json"
+        self.stop_path = state_dir / "live_stop"
+
+    def request_stop(self, status: str = "SAFE_MODE") -> None:
+        """Keep an operator stop independent of the long-running process's state writes."""
+        if status not in {"SAFE_MODE", "DISARMED"}:
+            raise ValueError(f"invalid live stop status: {status}")
+        self.stop_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.stop_path.with_name(f".{self.stop_path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temporary.write_text(status, encoding="utf-8")
+            os.replace(temporary, self.stop_path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def clear_stop(self) -> None:
+        self.stop_path.unlink(missing_ok=True)
+
+    def stop_requested(self) -> bool:
+        return self.stop_path.exists()
+
+    def stop_status(self) -> str | None:
+        if not self.stop_requested():
+            return None
+        status = self.stop_path.read_text(encoding="utf-8").strip()
+        return status if status in {"SAFE_MODE", "DISARMED"} else "SAFE_MODE"
 
     def load(self) -> LiveState:
         if not self.path.exists():
-            return LiveState()
+            state = LiveState()
+            if stopped := self.stop_status():
+                state.status = stopped
+            return state
         payload = json.loads(self.path.read_text(encoding="utf-8"))
         payload["positions"] = {
             coin: LivePosition(**position) for coin, position in payload.get("positions", {}).items()
         }
-        return LiveState(**payload)
+        state = LiveState(**payload)
+        if stopped := self.stop_status():
+            state.status = stopped
+        return state
 
     def save(self, state: LiveState) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -223,6 +256,8 @@ class LivePairExecutor:
         )
 
     def _begin(self, state: LiveState, action_id: str, coin: str, action: str) -> None:
+        if self.store.stop_requested():
+            raise RuntimeError("live stop requested; no new order action may begin")
         if state.pending_action is not None:
             raise RuntimeError("unresolved live action exists; operator reconciliation required")
         state.pending_action = {"action_id": action_id, "coin": coin, "action": action}
@@ -239,13 +274,39 @@ def account_equity_usd(
     perp_state: dict[str, Any],
     spot_state: dict[str, Any],
     spot_prices: dict[str, float],
+    *,
+    account_mode: str,
 ) -> float:
-    margin = perp_state.get("marginSummary", {})
-    equity = float(margin.get("accountValue", 0) or 0)
+    if account_mode not in {"unifiedAccount", "disabled"}:
+        raise ValueError(f"unsupported or ambiguous Hyperliquid account mode: {account_mode!r}")
+    spot_value = 0.0
     for balance in spot_state.get("balances", []):
         coin = str(balance.get("coin", ""))
         total = float(balance.get("total", 0) or 0)
-        equity += total if coin == "USDC" else total * spot_prices.get(coin, 0.0)
+        if not math.isfinite(total):
+            raise ValueError(f"non-finite spot balance for {coin}")
+        if coin == "USDC":
+            spot_value += total
+        elif total != 0:
+            price = spot_prices.get(coin)
+            if price is None or not math.isfinite(price) or price <= 0:
+                raise ValueError(f"missing valid spot price for {coin}; cannot value account")
+            spot_value += total * price
+    if account_mode == "unifiedAccount":
+        # In Unified Account, spot balances are the collateral source of truth.
+        # Include open perp P&L once, but never add the legacy perp accountValue.
+        unrealized_pnl = 0.0
+        for wrapper in perp_state.get("assetPositions", []):
+            position = wrapper.get("position", {})
+            if "unrealizedPnl" not in position:
+                raise ValueError("missing perpetual unrealizedPnl; cannot value unified account")
+            unrealized_pnl += float(position["unrealizedPnl"])
+        equity = spot_value + unrealized_pnl
+    else:
+        margin = perp_state.get("marginSummary", {})
+        equity = spot_value + float(margin.get("accountValue", 0) or 0)
+    if not math.isfinite(equity):
+        raise ValueError("non-finite account equity")
     return equity
 
 

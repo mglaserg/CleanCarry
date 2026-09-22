@@ -204,6 +204,11 @@ sudo systemctl enable --now cleancarry-autonomous.service
 
 Live trading bypasses the still-incomplete M2/M3 evidence gates at the user's explicit direction.
 Use a dedicated Hyperliquid subaccount and an authorized API wallet key—never the main wallet key.
+CleanCarry queries the subaccount's `userAbstraction` mode before each live cycle. It supports
+`unifiedAccount` and Standard (`disabled`); Portfolio Margin and ambiguous modes stop without
+trading. In Unified Account, sizing uses marked spot balances plus open perpetual unrealized P&L,
+not the legacy perps `accountValue`. The reported equity should still be checked against the
+subaccount before leaving the service unattended.
 In `/opt/cleancarry/.env`, set:
 
 ```env
@@ -213,7 +218,9 @@ HL_API_WALLET_PRIVATE_KEY=0xAPI_WALLET_KEY
 LIVE_TRADING_ENABLED=true
 ```
 
-Review the `CC_LIVE_*` caps, then arm the persistent state and run exactly one cycle first:
+`CC_LIVE_CAPITAL_FRACTION=0.25` is a CleanCarry safety default, not a RobotWealth sizing rule;
+set the nominal allocation deliberately for the account. Review all `CC_LIVE_*` caps, then arm the
+persistent state and run exactly one cycle first:
 
 ```bash
 sudo -u cleancarry env HOME=/opt/cleancarry UV_CACHE_DIR=/opt/cleancarry/.cache/uv \
@@ -231,14 +238,23 @@ the account and `state/live_state.json`, continuous operation can be started exp
 sudo systemctl enable --now cleancarry-live.service
 ```
 
-Stop new live actions immediately with:
+With this updated version, request a stop before the next new paired action:
 
 ```bash
 sudo -u cleancarry env HOME=/opt/cleancarry UV_CACHE_DIR=/opt/cleancarry/.cache/uv \
   /usr/local/bin/uv run --project /opt/cleancarry --frozen --no-sync \
   cleancarry live-control safe
-sudo systemctl stop cleancarry-live.service
+systemctl is-active cleancarry-live.service
 ```
+
+The live control creates a persistent stop marker that the running process checks before new
+paired actions. It does not interrupt an already-started pair's required hedge/recovery, and
+the process may take until its next cycle to exit. Once it has exited, `sudo systemctl stop
+cleancarry-live.service` ensures systemd marks it stopped. Stopping the service never closes an
+open position. Inspect spot and perp exposure on Hyperliquid before stopping or restarting. Older
+versions do not honor the stop marker while already running: stop that old service before deploying
+this fix. To deploy an updated version, stop the service, rerun the installer from the updated
+checkout, verify account balances and state, then explicitly re-arm and restart.
 
 ## Data layout
 

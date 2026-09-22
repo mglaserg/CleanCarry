@@ -235,6 +235,11 @@ model summaries, and limitations. `INSUFFICIENT_DATA` is distinct from `GO` and 
   the signer or exchange client.
 - `LIVE_TRADING_ENABLED` alone is insufficient: persistent arming bound to the configured account is
   also required.
+- The live process detects the Hyperliquid account-abstraction mode each cycle. Unified Account
+  equity is marked spot balances plus open perpetual unrealized P&L; Standard mode uses perp
+  `accountValue` plus marked spot balances. Unknown/Portfolio Margin modes fail closed.
+- A separate persistent live-stop marker survives cycle-state writes and is checked before each
+  new paired action. An in-flight pair still completes its hedge or recovery attempt.
 - Invalid/non-positive mids are dropped before scoring.
 - Unknown symbol relationships are excluded unless configured through the alias map.
 - Eligibility fails closed for required data that could not be observed.

@@ -88,7 +88,8 @@ assumptions. Any unexplained reconciliation break resets the evidence window.
 
 **Implementation status:** PARTIAL at explicit user direction. A default-off direct Hyperliquid
 API-wallet path, persistent arming, hard caps, paired recovery, reconciliation, and equity-based
-compounding exist. No real order has been sent, and the M2/M3 evidence gates are not passed.
+compounding exist. Unified Account sizing and an independent live-stop marker now have local tests,
+but no authenticated live-order evidence is retained here and the M2/M3 gates are not passed.
 
 ### Prerequisites
 

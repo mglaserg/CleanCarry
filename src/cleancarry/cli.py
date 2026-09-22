@@ -354,16 +354,20 @@ def live_control(
             )
         state.status = "ARMED"
         state.account_address = s.subaccount_address or s.account_address
+        store.save(state)
+        store.clear_stop()
     elif normalized in {"disarm", "safe"}:
         state.status = "DISARMED" if normalized == "disarm" else "SAFE_MODE"
+        store.request_stop(state.status)
     elif normalized == "acknowledge":
         if confirm != ARM_CONFIRMATION:
             raise typer.BadParameter(f"acknowledgement requires --confirm {ARM_CONFIRMATION}")
         state.pending_action = None
         state.status = "SAFE_MODE"
+        store.request_stop()
+        store.save(state)
     else:
         raise typer.BadParameter("action must be arm, disarm, safe, or acknowledge")
-    store.save(state)
     console.print(f"Live control accepted: {normalized}; status={state.status}")
 
 
@@ -375,7 +379,7 @@ def live(
     s = _settings()
     store = LiveStateStore(s.state_dir)
     state = store.load()
-    if not s.live_trading_enabled or state.status != "ARMED":
+    if not s.live_trading_enabled or state.status != "ARMED" or store.stop_requested():
         raise typer.BadParameter(
             "live execution is disarmed; set LIVE_TRADING_ENABLED=true and run "
             f"live-control arm --confirm {ARM_CONFIRMATION}"
@@ -391,6 +395,13 @@ def live(
     executor = LivePairExecutor(s, store, venue)
 
     while True:
+        if store.stop_requested():
+            console.print("Live stop requested; exiting before the next cycle")
+            return
+        state = store.load()
+        if state.status != "ARMED" or state.account_address != trading_address:
+            console.print("Live control is no longer armed for this account; exiting")
+            return
         started = datetime.now(UTC)
         try:
             _run_live_cycle(s, store, state, executor, trading_address, started)
@@ -414,13 +425,16 @@ def _run_live_cycle(
 ) -> None:
     with HyperliquidInfoClient(s.base_url) as client:
         markets, opportunities, raw = scan(client, s)
+        account_mode = client.user_abstraction(trading_address)
         perp_state = client.clearinghouse_state(trading_address)
         spot_state = client.spot_clearinghouse_state(trading_address)
     _archive_scan(s, markets, opportunities, raw)
     market_by_coin = {market.coin: market for market in markets}
     opportunity_by_coin = {item.coin: item for item in opportunities}
     spot_prices = {(market.spot_token or market.coin): market.spot_mid for market in markets}
-    equity = account_equity_usd(perp_state, spot_state, spot_prices)
+    equity = account_equity_usd(
+        perp_state, spot_state, spot_prices, account_mode=account_mode
+    )
     if equity <= 0:
         raise RuntimeError("live account equity is zero or unavailable")
     state.last_equity_usd = equity
@@ -521,7 +535,8 @@ def _run_live_cycle(
     state.last_cycle_at_utc = now.isoformat()
     store.save(state)
     console.print(
-        f"Live cycle complete | equity={_money(equity)} | target deployment={_money(deployment_limit)}"
+        f"Live cycle complete | account mode={account_mode} | "
+        f"equity={_money(equity)} | target deployment={_money(deployment_limit)}"
     )
 
 

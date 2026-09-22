@@ -39,6 +39,13 @@ behavior, safety, and architecture changes rather than listing every edited file
 
 ### Changed
 
+- Detect Hyperliquid account-abstraction mode in each live cycle; value Unified Account from spot
+  balances and open perp P&L without adding the misleading legacy perp account value, and fail
+  closed for unknown or Portfolio Margin modes.
+- Persist live stop requests outside the cycle-state file and check them before new paired actions,
+  so an active service cannot silently overwrite an operator's stop request.
+- Refuse Lubuntu upgrades while the live service is active, avoiding a mixed old-process/new-files
+  deployment.
 - Route all four Lubuntu `systemd` services through the locked `uv run` environment and replace
   pip-based contributor verification commands with `uv` equivalents.
 - Verify at install completion that the `cleancarry` user can read `.env` and print its path,

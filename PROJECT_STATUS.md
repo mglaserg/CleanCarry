@@ -52,6 +52,10 @@ CleanCarry should answer:
   verification and documented operator commands also use `uv`.
 - Direct Hyperliquid API-wallet execution is implemented behind environment and persistent arming,
   hard live caps, paired-leg recovery, reconciliation, and safe mode; it was not live-tested.
+- Live sizing now detects Standard versus Unified Account rather than combining their incompatible
+  balance fields. A separate stop marker prevents a running service from overwriting an operator
+  stop request. The installer refuses to overwrite files beneath an active live process. None of
+  these changes has been deployed to or verified on the Lubuntu host.
 
 ### Autonomous shadow foundation
 
@@ -84,6 +88,8 @@ On 2026-09-22 using Python 3.12.3:
 - `ruff check .`: **passed**;
 - `uv 0.12.17`: lock, sync, test, lint, and CLI wiring passed; the unarmed live command was verified
   to fail closed before constructing an execution cycle;
+- after Unified Account and stop-control changes, local `uv` verification passed: 35 tests and
+  Ruff; no authenticated venue call or Lubuntu service restart was performed;
 - study persistence and ensemble/current-only comparison were exercised with synthetic Parquet
   archives, including an excluded future observation;
 - root and `autonomous` CLI help smoke checks passed after editable installation with declared
@@ -125,9 +131,11 @@ unit-test success as live-execution or operational verification.
 - Tests do not yet cover archive interruption, account normalization, CLI rendering, broad malformed
   payloads, exact funding settlement timing, or elapsed order-timeout behavior.
 - The autonomous service has not completed the sustained shadow evidence window required by M3.
-- Live trading code now exists at explicit user direction, but no real order was sent and the M2/M3
-  evidence gates remain incomplete. Running it before those gates accepts the risk documented in
-  ADR 0006.
+- Live trading code now exists at explicit user direction, but this repository has no authenticated
+  live-order evidence and the M2/M3 evidence gates remain incomplete. Running it before those gates
+  accepts the risk documented in ADR 0006.
+- The Lubuntu service that the operator reported as active was running the previous code when these
+  local changes were made. Its current status and live account exposure cannot be verified here.
 
 ## Current objective
 

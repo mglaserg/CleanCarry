@@ -29,6 +29,12 @@ controls:
 - live target capital is recomputed from observed account equity every cycle, so gains and losses
   compound into later target sizes only within the configured absolute caps;
 - the live service never automatically restarts after an execution failure.
+- live account-abstraction mode is queried for the trading address each cycle; Unified Account
+  uses marked spot balances plus open perpetual unrealized P&L, while Standard uses the perp
+  account value plus marked spot balances. Unknown and Portfolio Margin modes fail closed;
+- an operator stop request lives in a separate persistent marker, so long-running cycle-state
+  writes cannot re-arm it. The marker is checked before each new paired action; an already-started
+  pair must still finish its hedge or recovery attempt.
 
 ADR 0001 remains valid for its evidence warning and milestone history, but its absolute statement
 that no execution code may exist is superseded by this explicit user-authorized decision.
@@ -44,3 +50,6 @@ that no execution code may exist is superseded by this explicit user-authorized 
   passed. Operators assume the additional risk of running before those gates are complete.
 - Continuous compounding is bounded, not unlimited: equity changes resize targets, while the
   absolute order and deployment caps remain authoritative.
+- Unified Account handling and the live stop marker have deterministic tests, but have not been
+  verified against this operator's live account. Existing running processes must be stopped and
+  restarted after deploying the changes.

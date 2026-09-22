@@ -64,6 +64,9 @@ class HyperliquidInfoClient:
     def spot_clearinghouse_state(self, address: str) -> Any:
         return self.post_info({"type": "spotClearinghouseState", "user": address})
 
+    def user_abstraction(self, address: str) -> Any:
+        return self.post_info({"type": "userAbstraction", "user": address})
+
     def user_funding(self, address: str, start_ms: int, end_ms: int | None = None) -> Any:
         payload: dict[str, Any] = {"type": "userFunding", "user": address, "startTime": start_ms}
         if end_ms is not None:
