@@ -62,6 +62,19 @@ data/derived/carry_markets_*.parquet
  manifest.json + summary.json + trade Parquet
 ```
 
+The autonomous boundary is paper-only:
+
+```text
+all venue perps -> canonical-USDC hedge map -> explicit filter reasons
+                -> eligible survivors -> deterministic rank and allocation
+                -> read-only intentions OR shadow paired fills
+                -> persistent positions -> hedge monitor
+                -> hysteresis exit -> same-cycle redeployment
+```
+
+`cleancarry autonomous --mode read_only` stops at intentions. `--mode shadow` changes only local
+paper state. Neither path has a signer or venue order method.
+
 ## Module responsibilities
 
 | Module | Owns | Must not own |
@@ -76,6 +89,7 @@ data/derived/carry_markets_*.parquet
 | `research/accounting.py` | Paired-leg dollar P&L identity | Signals, I/O, or execution |
 | `research/replay.py` | Signal preparation and chronological hysteresis replay | Archive discovery or study persistence |
 | `research/studies.py` | Strict archive loading, hashes, GO/KILL rule, atomic study artifacts | Live collection or order execution |
+| `paper.py` | Portfolio selection, shadow paired execution, paper state, reconciliation, controls | Venue signing or live order transport |
 
 ## Opportunity pipeline
 
@@ -84,15 +98,38 @@ data/derived/carry_markets_*.parquet
 3. Apply the configured spot-to-perpetual alias map where HyperCore names differ.
 4. Rank the initial intersection by current funding and liquidity so expensive history/book calls
    are spent on plausible names.
-5. For configured candidate counts, fetch funding history and both top-of-book spreads.
+5. For configured candidate counts, fetch funding history and both books; derive spread and
+   conservative two-sided USD depth inside the configured impact band.
 6. Normalize each valid pair into `CarryMarket`.
 7. Compute a simple expected hourly funding rate and convert it to gross APR.
 8. Subtract amortized round-trip fees/spreads and the configured basis-risk buffer.
-9. Apply conservative eligibility gates and rank by expected net APR.
-10. Display results and, by default, archive raw-normalized and derived records.
+9. Apply conservative eligibility gates and persist explicit reasons for every discovered perp.
+10. Rank only eligible survivors by expected net APR.
+11. Display results and, by default, archive raw-normalized and derived records.
 
 The upstream calls are sequential observations, not an atomic market snapshot. Each archived file
 records collection time, but consumers must not assume all fields were observed simultaneously.
+
+## Autonomous shadow contract
+
+- Existing positions use the lower exit hurdle; new positions require the higher entry hurdle.
+- Selection is deterministic by descending expected net APR, then coin name.
+- Notional is capped by book/volume capacity, per-asset limit, total deployment, strategy capital,
+  modeled perpetual collateral, margin utilization, and available position slots.
+- A paired shadow entry is accepted only when both simulated fills exist and their notional mismatch
+  is inside the hedge tolerance. Matched partial fills may open a smaller hedged position.
+- Unmatched fills are flattened in simulation. Failed recovery persists unresolved exposure and
+  enters `SAFE_MODE`, which blocks new entries.
+- Hedge correction requires both the basis-point tolerance and dollar trade buffer to be exceeded.
+- Exits happen before entries so released capital can be redeployed in the same cycle.
+- Atomic `state/paper_state.json` is the restart checkpoint; `state/paper_ledger.jsonl` is the
+  append-only audit trail. Derived strategy-cycle snapshots preserve inspectable decisions.
+- Operator pause/safe modes prevent new entries. Close requests execute on the next cycle.
+
+CleanCarry owns universe requirements, forecasting, eligibility, ranking, allocation, hysteresis,
+desired exposures, and strategy limits. A future Conductor integration may own scheduling,
+supervision, invocation, and approved execution routing, but it must call this boundary rather than
+reimplement the strategy.
 
 ## Financial definitions and units
 
@@ -189,6 +226,8 @@ model summaries, and limitations. `INSUFFICIENT_DATA` is distinct from `GO` and 
 - UTC is canonical for filenames and observation timestamps.
 - Historical replay must define a decision timestamp and prohibit observations after it.
 - Stored schemas and financial units must be migrated explicitly when changed.
+- `live` remains a hard stop even if `LIVE_TRADING_ENABLED=true`.
+- Read-only and shadow use the same filter/rank/select logic; shadow adds only local simulated state.
 
 ## Failure behavior
 

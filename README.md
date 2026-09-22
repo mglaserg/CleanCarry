@@ -1,12 +1,14 @@
-# CleanCarry v0.1 — Milestone 1
+# CleanCarry v0.1 — Research and autonomous shadow foundation
 
-**Lubuntu + Hyperliquid. Read-only by construction.**
+**Lubuntu + Hyperliquid. Read-only venue access; persistent shadow execution only.**
 
 CleanCarry looks for same-venue delta-neutral carry candidates:
 
 `LONG Hyperliquid spot + SHORT equal-dollar Hyperliquid perp`
 
-The first milestone deliberately does **not** send orders. It establishes the market-data archive, spot/perp universe intersection, funding forecast baseline, cost-aware opportunity score, account-state reader, realized-funding archive, tests, and systemd scheduling.
+CleanCarry does **not** send orders. It now runs the full filter/rank/select/size/monitor/exit/redeploy
+decision lifecycle in read-only or local shadow mode while the historical and paper evidence gates
+remain open.
 
 ## Project documentation
 
@@ -20,16 +22,19 @@ The first milestone deliberately does **not** send orders. It establishes the ma
 ## What works now
 
 - Discovers the Hyperliquid perp universe and USDC-quoted spot universe dynamically.
+- Persists every discovered perp with explicit pass/fail reasons, including no compatible spot.
 - Intersects spot and perp by underlying token instead of hard-coding BTC/ETH, with an explicit L1-token alias map (default `UBTC:BTC`) for HyperCore remappings.
 - Reads current funding, predicted funding, spot/perp mids, volume and basis.
 - Pulls 7d funding history for the top candidates and computes 24h/72h EWMAs + 72h funding volatility.
-- Pulls top-of-book spreads for the top candidates.
+- Pulls books for candidates and derives spread plus bounded two-sided USD depth.
 - Ranks on **expected net carry**, not displayed funding alone.
 - Archives normalized raw pulls and derived scans as local Parquet.
 - Reads perp account state + spot balances with only a public account address.
 - Archives actual realized user-funding records.
 - Ships Lubuntu `systemd` timers.
-- `cleancarry live` is a hard stop: there is no order-signing/sending code in M1.
+- Runs deterministic autonomous read-only or restart-safe shadow cycles with portfolio limits,
+  hysteresis, paired-fill failure recovery, hedge monitoring, exits, and replacement.
+- `cleancarry live` is a hard stop: there is no signer or order-sending code.
 
 ## Baseline score
 
@@ -124,6 +129,36 @@ Follow logs:
 tail -f /opt/cleancarry/logs/scan.log /opt/cleancarry/logs/scan.err.log
 ```
 
+Run one production decision cycle without changing paper state:
+
+```bash
+cleancarry autonomous --mode read_only --once
+```
+
+Run one persistent shadow cycle:
+
+```bash
+cleancarry autonomous --mode shadow --once
+```
+
+Inspect or control shadow state:
+
+```bash
+cleancarry paper-status
+cleancarry paper-control pause
+cleancarry paper-control resume
+cleancarry paper-control close --coin BTC
+cleancarry paper-control close-all
+cleancarry paper-control kill
+```
+
+After manual shadow cycles succeed, run unattended shadow mode directly or through systemd:
+
+```bash
+cleancarry autonomous --mode shadow
+sudo systemctl enable --now cleancarry-autonomous.service
+```
+
 ## Data layout
 
 ```text
@@ -140,6 +175,8 @@ data/raw/
 data/derived/
   carry_markets_*.parquet
   opportunities_*.parquet
+  universe_funnel_*.parquet
+  strategy_cycles_*.parquet
   studies/<STUDY_ID>/
     manifest.json
     summary.json
@@ -147,9 +184,17 @@ data/derived/
     trades_current_only.parquet
 ```
 
+Persistent shadow control state and its append-only audit trail live outside Git:
+
+```text
+state/paper_state.json
+state/paper_ledger.jsonl
+```
+
 ## Safety boundary
 
-No private key belongs in M1. `LIVE_TRADING_ENABLED` defaults to false, and even setting it true cannot cause a trade because order code is intentionally absent.
+No private key belongs in this repository. `LIVE_TRADING_ENABLED` defaults to false, and even
+setting it true cannot cause a trade because order code is intentionally absent.
 
 Before Milestone 4 live trading, we will add separate signing/execution code behind guards for account identity, staleness, paired-leg completion, max temporary delta, margin utilization, max notional, max single-name exposure, existing-position reconciliation, and a persistent live arming switch.
 

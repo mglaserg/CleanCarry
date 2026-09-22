@@ -27,3 +27,5 @@ the old decision.
 - `0002-local-parquet-evidence-store.md` — local Parquet is the initial append-oriented research store.
 - `0003-reproducible-replay-study-contract.md` — replay studies use strict as-of inputs and versioned,
   hashed artifacts with pre-registered decisions.
+- `0004-autonomous-shadow-strategy-boundary.md` — the production decision pipeline may run in
+  read-only or persistent shadow mode while live execution remains prohibited.

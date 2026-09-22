@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "cleancarry"
 version = "0.1.0"
-description = "Audit-first Hyperliquid spot/perp clean carry scanner for Lubuntu"
+description = "Audit-first Hyperliquid spot/perp carry research and autonomous shadow strategy"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

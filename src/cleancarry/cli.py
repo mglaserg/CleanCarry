@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import time
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 
 import pandas as pd
@@ -11,6 +14,7 @@ from .account import summarize_account
 from .archive import upsert_timeseries, write_snapshot
 from .config import Settings
 from .hyperliquid import HyperliquidInfoClient
+from .paper import AutonomousPaperStrategy, PaperStateStore
 from .research import StudyConfig, run_carry_study
 from .scanner import (
     normalize_perp_contexts,
@@ -41,24 +45,7 @@ def opportunities(
         markets, opps, raw = scan(client, s)
 
     if archive:
-        raw_dir = s.data_dir / "raw"
-        derived_dir = s.data_dir / "derived"
-        write_snapshot(normalize_perp_contexts(raw["perp_payload"]), raw_dir, "perp_contexts")
-        write_snapshot(normalize_spot_contexts(raw["spot_payload"]), raw_dir, "spot_contexts")
-        pred_rows = normalize_predicted(raw["predicted_raw"])
-        if pred_rows:
-            write_snapshot(pred_rows, raw_dir, "predicted_fundings")
-        for coin, hist in raw["histories"].items():
-            if hist:
-                normalized = [{**row, "coin": row.get("coin", coin)} for row in hist]
-                upsert_timeseries(
-                    normalized,
-                    raw_dir / f"funding_history_{coin}.parquet",
-                    subset=["coin", "time"],
-                    sort_by=["coin", "time"],
-                )
-        write_snapshot([m.asdict() for m in markets], derived_dir, "carry_markets")
-        write_snapshot([o.asdict() for o in opps], derived_dir, "opportunities")
+        _archive_scan(s, markets, opps, raw)
 
     shown = opps if all_markets else [o for o in opps if o.eligible]
     table = Table(title="CleanCarry opportunities")
@@ -84,9 +71,138 @@ def opportunities(
         )
     console.print(table)
     console.print(
-        f"[dim]Intersection={len(markets)} | Eligible={sum(o.eligible for o in opps)} | "
+        f"[dim]Perps={len(raw['universe'])} | Intersection={len(markets)} | "
+        f"Eligible={sum(o.eligible for o in opps)} | "
         f"entry hurdle={s.min_net_apr:.1%} net APR | expected hold={s.expected_hold_hours}h[/dim]"
     )
+
+
+@app.command()
+def autonomous(
+    mode: str | None = typer.Option(
+        None, "--mode", help="read_only or shadow. Live remains intentionally unavailable."
+    ),
+    once: bool = typer.Option(False, "--once", help="Run one cycle instead of the service loop."),
+) -> None:
+    """Run the autonomous decision pipeline in read-only or persistent shadow mode."""
+    s = _settings()
+    selected_mode = (mode or s.execution_mode).strip().lower()
+    if selected_mode == "live":
+        console.print("[bold red]Live execution is not implemented or armed.[/bold red]")
+        raise typer.Exit(code=2)
+    if selected_mode not in {"read_only", "shadow"}:
+        raise typer.BadParameter("--mode must be read_only or shadow")
+
+    strategy = AutonomousPaperStrategy(s, PaperStateStore(s.state_dir))
+    while True:
+        cycle_started = datetime.now(UTC)
+        with HyperliquidInfoClient(s.base_url) as client:
+            markets, opps, raw = scan(client, s)
+        _archive_scan(s, markets, opps, raw)
+        prices = {market.coin: (market.spot_mid, market.perp_mid) for market in markets}
+        report = strategy.run_cycle(
+            opps,
+            prices,
+            now=cycle_started,
+            mode=selected_mode,
+            discovered_count=len(raw["universe"]),
+        )
+        cycle_row = report.asdict()
+        for field in ("selected", "active_coins", "actions", "rejection_counts"):
+            cycle_row[field] = json.dumps(cycle_row[field], sort_keys=True)
+        write_snapshot([cycle_row], s.data_dir / "derived", "strategy_cycles")
+        _render_cycle(report)
+        if once:
+            return
+        elapsed = (datetime.now(UTC) - cycle_started).total_seconds()
+        time.sleep(max(s.strategy_cycle_seconds - elapsed, 1))
+
+
+@app.command("paper-status")
+def paper_status() -> None:
+    """Show persistent shadow portfolio state and recent execution events."""
+    s = _settings()
+    store = PaperStateStore(s.state_dir)
+    state = store.load()
+    console.print(
+        f"[bold]Status: {state.status}[/bold] | cycles={state.cycle_count} | "
+        f"last={state.last_cycle_at_utc or 'never'}"
+    )
+    if state.positions:
+        table = Table(title="CleanCarry shadow positions")
+        for name in (
+            "Coin",
+            "Spot notional",
+            "Perp notional",
+            "Hedge error",
+            "Net APR",
+            "Funding",
+            "Opened",
+        ):
+            table.add_column(name)
+        for position in sorted(state.positions.values(), key=lambda item: item.coin):
+            table.add_row(
+                position.coin,
+                _money(
+                    position.spot_quantity
+                    * (position.last_spot_px or position.entry_spot_px)
+                ),
+                _money(
+                    position.perp_quantity
+                    * (position.last_perp_px or position.entry_perp_px)
+                ),
+                f"{position.hedge_error_bps:.1f}bp",
+                _pct(position.current_expected_net_apr),
+                _money(position.funding_accrued_usd),
+                position.opened_at_utc,
+            )
+        console.print(table)
+    if state.unresolved_exposure:
+        console.print(f"[bold red]Unresolved exposure: {state.unresolved_exposure}[/bold red]")
+
+
+@app.command("paper-control")
+def paper_control(
+    action: str = typer.Argument(..., help="pause, resume, safe, close, close-all, or kill"),
+    coin: str | None = typer.Option(None, "--coin", help="Required for close."),
+) -> None:
+    """Change persistent shadow controls; live trading remains impossible."""
+    s = _settings()
+    store = PaperStateStore(s.state_dir)
+    state = store.load()
+    normalized = action.strip().lower()
+    if normalized == "pause":
+        state.status = "PAUSED"
+    elif normalized == "resume":
+        if state.unresolved_exposure:
+            raise typer.BadParameter("cannot resume with unresolved exposure")
+        state.status = "RUNNING"
+    elif normalized == "safe":
+        state.status = "SAFE_MODE"
+    elif normalized == "close":
+        if not coin:
+            raise typer.BadParameter("--coin is required for close")
+        target = coin.strip().upper()
+        if target not in state.positions:
+            raise typer.BadParameter(f"no managed shadow position for {target}")
+        if target not in state.close_requests:
+            state.close_requests.append(target)
+    elif normalized in {"close-all", "kill"}:
+        state.close_requests = sorted(state.positions)
+        if normalized == "kill":
+            state.status = "SAFE_MODE"
+    else:
+        raise typer.BadParameter("action must be pause, resume, safe, close, close-all, or kill")
+    store.append_event(
+        {
+            "at_utc": datetime.now(UTC).isoformat(),
+            "action": "OPERATOR_CONTROL",
+            "control": normalized,
+            "coin": coin,
+        }
+    )
+    store.save(state)
+    console.print(f"Shadow control accepted: {normalized}; status={state.status}")
 
 
 @app.command()
@@ -211,13 +327,13 @@ def replay(
 
 @app.command()
 def live() -> None:
-    """Safety latch: M1 intentionally cannot send orders."""
+    """Safety latch: live order transmission is intentionally unavailable."""
     s = _settings()
     if not s.live_trading_enabled:
         console.print("[yellow]LIVE_TRADING_ENABLED=false. Live trading is disarmed.[/yellow]")
     console.print(
-        "[bold]M1 contains no order-sending code by design.[/bold] "
-        "Complete paper/reconciliation milestone first."
+        "[bold]CleanCarry contains no signer or order-sending code.[/bold] "
+        "Complete and approve the paper/reconciliation gate first."
     )
     raise typer.Exit(code=2)
 
@@ -249,6 +365,49 @@ def _parse_utc(value: str) -> datetime:
     if timestamp.tzinfo is None:
         raise ValueError("--as-of-utc must include a timezone, such as Z or +00:00")
     return timestamp.tz_convert("UTC").to_pydatetime()
+
+
+def _archive_scan(s: Settings, markets: list, opps: list, raw: dict) -> None:
+    raw_dir = s.data_dir / "raw"
+    derived_dir = s.data_dir / "derived"
+    write_snapshot(normalize_perp_contexts(raw["perp_payload"]), raw_dir, "perp_contexts")
+    write_snapshot(normalize_spot_contexts(raw["spot_payload"]), raw_dir, "spot_contexts")
+    pred_rows = normalize_predicted(raw["predicted_raw"])
+    if pred_rows:
+        write_snapshot(pred_rows, raw_dir, "predicted_fundings")
+    for coin, hist in raw["histories"].items():
+        if hist:
+            normalized = [{**row, "coin": row.get("coin", coin)} for row in hist]
+            upsert_timeseries(
+                normalized,
+                raw_dir / f"funding_history_{coin}.parquet",
+                subset=["coin", "time"],
+                sort_by=["coin", "time"],
+            )
+    write_snapshot([m.asdict() for m in markets], derived_dir, "carry_markets")
+    write_snapshot([o.asdict() for o in opps], derived_dir, "opportunities")
+    write_snapshot([item.asdict() for item in raw["universe"]], derived_dir, "universe_funnel")
+
+
+def _render_cycle(report) -> None:
+    console.print(
+        f"[bold]{report.status}[/bold] mode={report.mode} | discovered={report.discovered} | "
+        f"eligible={report.eligible} | selected={len(report.selected)} | "
+        f"active={len(report.active_coins)} | deployed={_money(report.deployed_notional_usd)} | "
+        f"free={_money(report.free_strategy_capital_usd)} | "
+        f"margin={_pct(report.margin_utilization)}"
+    )
+    if report.selected:
+        table = Table(title="Automatic selections")
+        for name in ("Rank", "Coin", "Notional", "Net APR", "Why"):
+            table.add_column(name)
+        for item in report.selected:
+            table.add_row(
+                str(item.rank), item.coin, _money(item.notional_usd), _pct(item.expected_net_apr), item.reason
+            )
+        console.print(table)
+    if report.actions:
+        console.print(pd.DataFrame([asdict(item) for item in report.actions]).to_string(index=False))
 
 
 if __name__ == "__main__":

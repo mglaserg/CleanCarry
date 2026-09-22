@@ -59,14 +59,22 @@ earns paper trading. Attractive headline APR alone does not pass the gate.
 
 ## M3 — Paper portfolio and reconciliation — QUEUED
 
-- persistent double-entry-style intent/order/fill/position ledger;
-- target sizing with max notional, single-name exposure, and liquidity limits;
-- paired-leg state machine with partial-fill and timeout handling in simulation;
-- restart-safe reconciliation between intended and observed positions;
-- margin-utilization and temporary-delta limits;
-- stale-data and degraded-upstream circuit breakers;
-- daily P&L attribution and funding reconciliation;
-- operator runbook, alerts, and explicit paper-only mode.
+- persistent intent/order/fill/position ledger — **PARTIAL:** atomic state and append-only shadow
+  events exist; double-entry cash accounting, locking, and crash-injection coverage remain;
+- target sizing with max notional, single-name exposure, liquidity, capital, collateral, and modeled
+  margin limits — **DONE for shadow selection**;
+- paired-leg state machine with partial-fill and timeout handling in simulation — **PARTIAL:**
+  success, rejection, partial hedged fill, unmatched-leg recovery, safe mode, and idempotency are
+  covered; elapsed timeout scheduling and venue-calibrated fills remain;
+- restart-safe reconciliation between intended and observed positions — **PARTIAL:** persisted shadow
+  restart and explicit mismatch detection exist; public-account integration remains;
+- margin-utilization and temporary-delta limits — **PARTIAL:** allocation and hedge-error controls
+  exist; temporary-delta duration and cash-ledger enforcement remain;
+- stale-data and degraded-upstream circuit breakers — **PARTIAL:** per-opportunity staleness and safe
+  mode exist; retry/backoff and prolonged-upstream policy remain;
+- daily P&L attribution and funding reconciliation — **NOT STARTED in autonomous cycles**;
+- operator runbook, alerts, and explicit paper-only mode — **PARTIAL:** CLI controls/status and a
+  shadow systemd service exist; alert delivery and burn-in runbook remain.
 
 ### Gate
 

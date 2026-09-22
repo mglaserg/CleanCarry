@@ -125,7 +125,12 @@ def prepare_signals(
     output = observations.copy()
     signals: list[float] = []
     eligibility: list[bool] = []
-    settings_without_hurdle = replace(settings, min_net_apr=float("-inf"))
+    # Schema-v1 archives predate depth fields; keep that accepted replay contract unchanged.
+    settings_without_hurdle = replace(
+        settings,
+        min_net_apr=float("-inf"),
+        min_depth_usd_per_leg=0,
+    )
 
     for row in output.to_dict(orient="records"):
         market = _market_from_row(row)

@@ -20,9 +20,11 @@ CleanCarry should answer:
 ### Scanner and research inputs
 
 - Dynamic Hyperliquid perpetual and canonical USDC spot discovery.
+- A persisted record for every discovered perpetual, including explicit no-spot, volume,
+  open-interest, history, spread, depth, basis, funding, net-carry, and override rejection codes.
 - Explicit HyperCore spot/perpetual alias configuration, defaulting to `UBTC:BTC`.
 - Current and predicted funding, 24h/72h EWMAs, 72h funding volatility, basis, volume, and
-  top-of-book spread inputs.
+  top-of-book spread plus bounded two-sided depth inputs.
 - Transparent funding ensemble and configurable cost/risk gates.
 - Conservative eligibility behavior when required history, prediction, or spread data is missing.
 
@@ -33,13 +35,26 @@ CleanCarry should answer:
 - Deduplicated time-series archives for funding history and realized user funding.
 - Read-only account inspection using a public address.
 - Generated data, logs, state, `.env`, and credentials excluded from Git.
+- Collision-resistant atomic Parquet writes for snapshots and deduplicated time series.
 
 ### Operations and safety
 
-- Typer CLI commands: `opportunities`, `status`, `funding`, `replay`, and the hard-stop `live`
-  command.
-- Lubuntu installation script and hardened `systemd` oneshot/timer units.
+- CLI commands for opportunities, account/funding observation, replay, autonomous read-only and
+  shadow cycles, paper status/control, and the hard-stop `live` command.
+- Lubuntu collection timers and a hardened long-running autonomous shadow service.
 - No private-key configuration, signing dependency, exchange client, or order-sending code.
+
+### Autonomous shadow foundation
+
+- Shared read-only/shadow pipeline for filter, rank, select, size, paired simulation, monitor, exit,
+  and same-cycle redeployment.
+- Deterministic capital allocation with position, single-asset, total-deployment, strategy-capital,
+  liquidity-capacity, modeled collateral, and margin-utilization limits.
+- Entry/exit hysteresis and dollar/basis-point hedge-rebalance buffers.
+- Atomic schema-versioned paper state and append-only JSON-lines audit events.
+- Idempotent paired actions, partial hedged fills, unmatched-leg flatten recovery, unresolved-exposure
+  safe mode, restart without duplicate entries, and explicit reconciliation checks.
+- Paper controls for pause, resume, safe mode, close-one, close-all, and kill-on-next-cycle.
 
 ### Historical replay foundation
 
@@ -56,12 +71,15 @@ CleanCarry should answer:
 
 On 2026-09-21 using Python 3.12.3:
 
-- `pytest`: **10 passed**;
+- `pytest`: **22 passed**;
 - `ruff check .`: **passed**;
 - study persistence and ensemble/current-only comparison were exercised with synthetic Parquet
   archives, including an excluded future observation;
-- root and `replay` CLI help smoke checks passed using the declared Typer/Rich dependencies in an
-  isolated temporary dependency directory.
+- root and `autonomous` CLI help smoke checks passed after editable installation with declared
+  runtime/development dependencies.
+- autonomous tests exercised filter/rank/select, limits, hysteresis hold/exit, replacement,
+  partial/rejected legs, recovery, idempotency, hedge correction, stale data, restart, and
+  reconciliation safe mode.
 
 No live Hyperliquid smoke test or Lubuntu/systemd install test was run during this documentation
 baseline. Do not interpret unit-test success as upstream or operational verification.
@@ -71,20 +89,25 @@ baseline. Do not interpret unit-test success as upstream or operational verifica
 - The repository data directories currently contain no real archive on which to run the new study.
 - No portfolio-wide archived-data coverage/cadence/gap audit exists; validation is currently scoped
   to files contributing observations for the selected coin.
-- Snapshots from one scan are not tied together by a run ID or manifest and are not atomic.
+- Snapshots from one scan are not tied together by a run ID or manifest.
 - Stored records have no explicit schema version or migration system.
 - Funding ensemble weights and risk buffers are assumptions, not validated parameters.
-- The spread/fee model is intentionally simple; market impact and partial execution are not modeled.
+- The spread/fee model is intentionally simple; shadow fills are deterministic rather than a
+  calibrated impact or queue-position model.
 - API requests have timeouts but no explicit retry/backoff or rate-limit policy.
-- Tests cover scanner math and the first replay/accounting slice, but not archive write behavior,
-  account normalization, CLI rendering, broad malformed payload cases, or exact venue funding
-  settlement timing.
-- No paper ledger, target sizing, leg state machine, or restart reconciliation exists.
+- Paper state is single-process and lacks locking, backup/restore drills, and crash injection between
+  every ledger/state write.
+- Funding accrual, fee debits, daily P&L, and public-account-to-paper reconciliation are not yet
+  integrated into each autonomous cycle.
+- Tests do not yet cover archive interruption, account normalization, CLI rendering, broad malformed
+  payloads, exact funding settlement timing, or elapsed order-timeout behavior.
+- The autonomous service has not completed the sustained shadow evidence window required by M3.
 - Live trading is intentionally impossible.
 
 ## Current objective
 
-Run and harden the M2 slice on real archived observations:
+M2 remains the active evidence gate. Run and harden it on real archived observations, then burn in
+the new shadow foundation without skipping milestone promotion:
 
 1. collect or locate sufficient `carry_markets` history for at least one eligible coin;
 2. add portfolio-wide coverage, cadence, gap, and schema auditing before study execution;
@@ -93,11 +116,13 @@ Run and harden the M2 slice on real archived observations:
 5. add at least one simpler baseline and sensitivity analysis for costs/hurdles;
 6. execute the registered study and retain its first real `GO`, `KILL`, or `INSUFFICIENT_DATA`
    result without changing the rule after seeing the outcome.
+7. integrate autonomous funding/P&L reconciliation and retain a sustained shadow run with no
+   unexplained cash, position, hedge, or restart drift.
 
 ## Recommended next files
 
-Continue within the separate research namespace rather than expanding `scanner.py` into a
-backtester:
+Continue within the separate research and paper boundaries rather than putting portfolio state into
+`scanner.py`:
 
 ```text
 src/cleancarry/research/     implemented single-pair slice
@@ -107,6 +132,8 @@ src/cleancarry/research/     implemented single-pair slice
 tests/
   test_replay.py             as-of, replay, and manifest coverage
   test_accounting.py         attribution identity coverage
+  test_paper.py              lifecycle, failure, restart, and reconciliation coverage
+src/cleancarry/paper.py      shadow portfolio, paired simulation, state, and reconciliation
 ```
 
 The study artifact contract is recorded in ADR 0003. Extend it compatibly or supersede the ADR when
@@ -118,6 +145,7 @@ A fresh session should:
 
 1. read `AGENTS.md`, this file, `ROADMAP.md`, and `ARCHITECTURE.md`;
 2. run tests and lint before changing behavior;
-3. keep M2 read-only and historical;
-4. run and harden the replay against real archived observations;
-5. update this file, `ROADMAP.md`, and `CHANGELOG.md` with the result.
+3. keep M2 read-only and keep live execution impossible;
+4. run and harden replay against real archives, then burn in shadow mode;
+5. do not mark M3 complete without retained sustained reconciliation evidence;
+6. update this file, `ROADMAP.md`, and `CHANGELOG.md` with the result.

@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import math
 import statistics
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 
 from .config import Settings
 from .hyperliquid import HyperliquidInfoClient
-from .models import CarryMarket, Opportunity
+from .models import CarryMarket, Opportunity, RejectionCode, UniverseEvaluation
 
 HOURS_PER_YEAR = 365.0 * 24.0
 
@@ -55,6 +56,36 @@ def _book_spread_bps(book: Any) -> float | None:
         return (ask - bid) / mid * 10_000.0
     except (KeyError, IndexError, TypeError, ValueError):
         return None
+
+
+def _book_metrics(book: Any, impact_bps: float) -> tuple[float | None, float | None]:
+    """Return top-of-book spread and conservative two-sided executable depth in USD."""
+    spread = _book_spread_bps(book)
+    try:
+        levels = book["levels"]
+        bid = float(levels[0][0]["px"])
+        ask = float(levels[1][0]["px"])
+        mid = (bid + ask) / 2.0
+        lower = mid * (1.0 - impact_bps / 10_000.0)
+        upper = mid * (1.0 + impact_bps / 10_000.0)
+
+        def side_depth(rows: list[dict[str, Any]], *, is_bid: bool) -> float:
+            total = 0.0
+            for level in rows:
+                px = float(level["px"])
+                size = float(level["sz"])
+                if (is_bid and px < lower) or (not is_bid and px > upper):
+                    continue
+                total += px * size
+            return total
+
+        depth = min(
+            side_depth(levels[0], is_bid=True),
+            side_depth(levels[1], is_bid=False),
+        )
+        return spread, depth if math.isfinite(depth) else None
+    except (KeyError, IndexError, TypeError, ValueError):
+        return spread, None
 
 
 def parse_predicted_fundings(payload: Any) -> dict[str, float]:
@@ -156,29 +187,50 @@ def score_market(market: CarryMarket, settings: Settings) -> Opportunity:
     net_apr = gross_apr - cost_apr - settings.basis_risk_buffer_apr
 
     reasons: list[str] = []
-    if market.spot_day_volume_usd < settings.min_spot_day_volume_usd:
-        reasons.append("spot volume")
-    if market.perp_day_volume_usd < settings.min_perp_day_volume_usd:
-        reasons.append("perp volume")
+    if (
+        market.spot_day_volume_usd < settings.min_spot_day_volume_usd
+        or market.perp_day_volume_usd < settings.min_perp_day_volume_usd
+    ):
+        reasons.append(RejectionCode.INSUFFICIENT_VOLUME)
+    if settings.min_perp_open_interest_usd > 0 and (
+        market.perp_open_interest_usd is None
+        or market.perp_open_interest_usd < settings.min_perp_open_interest_usd
+    ):
+        reasons.append(RejectionCode.INSUFFICIENT_OPEN_INTEREST)
     if abs(market.basis_bps) > settings.max_abs_basis_bps:
-        reasons.append("basis")
+        reasons.append(RejectionCode.BASIS_TOO_WIDE)
     if market.current_funding_hourly <= 0:
-        reasons.append("current funding <= 0")
-    if market.predicted_funding_hourly is None:
-        reasons.append("predicted funding unavailable")
-    elif market.predicted_funding_hourly <= 0:
-        reasons.append("predicted funding <= 0")
-    if market.ewma_24h is None:
-        reasons.append("funding history unavailable")
+        reasons.append(RejectionCode.FUNDING_TOO_LOW)
+    if market.predicted_funding_hourly is None or market.predicted_funding_hourly <= 0:
+        reasons.append(RejectionCode.FUNDING_TOO_LOW)
+    if market.ewma_24h is None or (
+        market.funding_history_count > 0
+        and market.funding_history_count < settings.min_funding_history
+    ):
+        reasons.append(RejectionCode.INSUFFICIENT_HISTORY)
     elif market.ewma_24h <= 0:
-        reasons.append("EWMA24 funding <= 0")
-    for label, spread in (("spot spread", market.spot_spread_bps), ("perp spread", market.perp_spread_bps)):
-        if spread is None:
-            reasons.append(f"{label} unavailable")
-        elif spread > settings.max_spread_bps_per_leg:
-            reasons.append(label)
+        reasons.append(RejectionCode.FUNDING_TOO_LOW)
+    for spread in (market.spot_spread_bps, market.perp_spread_bps):
+        if spread is None or spread > settings.max_spread_bps_per_leg:
+            reasons.append(RejectionCode.SPREAD_TOO_WIDE)
+    if settings.min_depth_usd_per_leg > 0:
+        for depth in (market.spot_depth_usd, market.perp_depth_usd):
+            if depth is None or depth < settings.min_depth_usd_per_leg:
+                reasons.append(RejectionCode.INSUFFICIENT_DEPTH)
+    if settings.allowlist and market.coin.upper() not in settings.allowlist:
+        reasons.append(RejectionCode.ALLOWLIST)
+    if market.coin.upper() in settings.denylist:
+        reasons.append(RejectionCode.DENYLIST)
     if not _isfinite(net_apr) or net_apr < settings.min_net_apr:
-        reasons.append("net APR hurdle")
+        reasons.append(RejectionCode.EXPECTED_NET_CARRY_TOO_LOW)
+
+    reasons = list(dict.fromkeys(reasons))
+    capacity = min(
+        market.spot_day_volume_usd * settings.liquidity_participation,
+        market.perp_day_volume_usd * settings.liquidity_participation,
+        market.spot_depth_usd or 0.0,
+        market.perp_depth_usd or 0.0,
+    )
 
     return Opportunity(
         coin=market.coin,
@@ -201,16 +253,41 @@ def score_market(market: CarryMarket, settings: Settings) -> Opportunity:
         spot_spread_bps=market.spot_spread_bps,
         perp_spread_bps=market.perp_spread_bps,
         eligible=not reasons,
-        reason="eligible" if not reasons else ", ".join(reasons),
+        reason=RejectionCode.ELIGIBLE if not reasons else ",".join(reasons),
+        rejection_codes=tuple(reasons),
+        capacity_usd=capacity,
+        observed_at_utc=market.observed_at_utc,
     )
 
 
-def scan(client: HyperliquidInfoClient, settings: Settings) -> tuple[list[CarryMarket], list[Opportunity], dict[str, Any]]:
+def scan(
+    client: HyperliquidInfoClient, settings: Settings
+) -> tuple[list[CarryMarket], list[Opportunity], dict[str, Any]]:
+    observed_at = datetime.now(UTC).isoformat()
     perp_payload = client.perp_meta_and_contexts()
     spot_payload = client.spot_meta_and_contexts()
     predicted_raw = client.predicted_fundings()
     predicted = parse_predicted_fundings(predicted_raw)
     intersection = build_intersection(perp_payload, spot_payload, settings.alias_map())
+    matched = {row["coin"]: row for row in intersection}
+    perp_meta, _ = perp_payload
+    discovered_perps = [
+        str(item.get("name", ""))
+        for item in perp_meta.get("universe", [])
+        if str(item.get("name", ""))
+    ]
+    universe: list[UniverseEvaluation] = [
+        UniverseEvaluation(
+            coin=coin,
+            spot_market=(str(matched[coin]["spot_market"]) if coin in matched else None),
+            stage="SPOT_HEDGEABLE" if coin in matched else "DISCOVERED",
+            eligible=False,
+            rejection_codes=() if coin in matched else (RejectionCode.NO_SPOT_HEDGE,),
+            detail="canonical USDC spot hedge found" if coin in matched else "no canonical USDC spot mapping",
+            observed_at_utc=observed_at,
+        )
+        for coin in discovered_perps
+    ]
 
     base_rows: list[dict[str, Any]] = []
     for row in intersection:
@@ -230,6 +307,12 @@ def scan(client: HyperliquidInfoClient, settings: Settings) -> tuple[list[CarryM
                 "current_funding_hourly": _f(pctx.get("funding"), 0.0),
                 "predicted_funding_hourly": predicted.get(row["coin"]),
                 "basis_bps": (pmid / smid - 1.0) * 10_000.0,
+                "perp_open_interest_usd": (
+                    _f(pctx.get("openInterest"), math.nan) * pmid
+                    if _isfinite(_f(pctx.get("openInterest"), math.nan))
+                    else None
+                ),
+                "observed_at_utc": observed_at,
             }
         )
 
@@ -245,7 +328,7 @@ def scan(client: HyperliquidInfoClient, settings: Settings) -> tuple[list[CarryM
     start = now - settings.history_hours * 60 * 60 * 1000
 
     histories: dict[str, list[dict[str, Any]]] = {}
-    spreads: dict[str, tuple[float | None, float | None]] = {}
+    books: dict[str, tuple[float | None, float | None, float | None, float | None]] = {}
     for row in ranked:
         coin = row["coin"]
         if coin in history_names:
@@ -255,20 +338,26 @@ def scan(client: HyperliquidInfoClient, settings: Settings) -> tuple[list[CarryM
                 histories[coin] = []
         if coin in book_names:
             try:
-                perp_spread = _book_spread_bps(client.l2_book(coin))
+                perp_spread, perp_depth = _book_metrics(
+                    client.l2_book(coin), settings.depth_impact_bps
+                )
             except (httpx.HTTPError, ValueError):
-                perp_spread = None
+                perp_spread, perp_depth = None, None
             try:
-                spot_spread = _book_spread_bps(client.l2_book(row["spot_market"]))
+                spot_spread, spot_depth = _book_metrics(
+                    client.l2_book(row["spot_market"]), settings.depth_impact_bps
+                )
             except (httpx.HTTPError, ValueError):
-                spot_spread = None
-            spreads[coin] = (spot_spread, perp_spread)
+                spot_spread, spot_depth = None, None
+            books[coin] = (spot_spread, perp_spread, spot_depth, perp_depth)
 
     markets: list[CarryMarket] = []
     for row in base_rows:
         hist = histories.get(row["coin"], [])
         rates = [_f(x.get("fundingRate")) for x in hist if isinstance(x, dict)]
-        spot_spread, perp_spread = spreads.get(row["coin"], (None, None))
+        spot_spread, perp_spread, spot_depth, perp_depth = books.get(
+            row["coin"], (None, None, None, None)
+        )
         markets.append(
             CarryMarket(
                 **row,
@@ -277,16 +366,52 @@ def scan(client: HyperliquidInfoClient, settings: Settings) -> tuple[list[CarryM
                 funding_vol_72h=_funding_vol(rates, 72),
                 spot_spread_bps=spot_spread,
                 perp_spread_bps=perp_spread,
+                spot_depth_usd=spot_depth,
+                perp_depth_usd=perp_depth,
+                funding_history_count=len([rate for rate in rates if _isfinite(rate)]),
             )
         )
 
     opportunities = [score_market(m, settings) for m in markets]
-    opportunities.sort(key=lambda x: x.expected_net_apr, reverse=True)
+    opportunities.sort(key=lambda x: (x.eligible, x.expected_net_apr), reverse=True)
+    opportunity_by_coin = {item.coin: item for item in opportunities}
+    universe = [
+        UniverseEvaluation(
+            coin=item.coin,
+            spot_market=item.spot_market,
+            stage=("CARRY_QUALIFIED" if opportunity_by_coin[item.coin].eligible else "FILTERED")
+            if item.coin in opportunity_by_coin
+            else item.stage,
+            eligible=(opportunity_by_coin[item.coin].eligible if item.coin in opportunity_by_coin else False),
+            rejection_codes=(
+                opportunity_by_coin[item.coin].rejection_codes
+                if item.coin in opportunity_by_coin
+                else (
+                    item.rejection_codes
+                    if item.rejection_codes
+                    else (RejectionCode.INVALID_MARKET_DATA,)
+                )
+            ),
+            detail=(
+                opportunity_by_coin[item.coin].reason
+                if item.coin in opportunity_by_coin
+                else (
+                    item.detail
+                    if item.rejection_codes
+                    else RejectionCode.INVALID_MARKET_DATA
+                )
+            ),
+            observed_at_utc=observed_at,
+        )
+        for item in universe
+    ]
     raw = {
         "perp_payload": perp_payload,
         "spot_payload": spot_payload,
         "predicted_raw": predicted_raw,
         "histories": histories,
+        "universe": universe,
+        "observed_at_utc": observed_at,
     }
     return markets, opportunities, raw
 
