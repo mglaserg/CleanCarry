@@ -223,6 +223,34 @@ def test_hedge_buffer_and_reconciliation(tmp_path):
     assert store.load().status == "SAFE_MODE"
 
 
+def test_target_resize_moves_to_percentage_buffer_edge(tmp_path):
+    settings = _settings(
+        max_positions=1,
+        max_total_deployment_usd=1_000,
+        max_per_asset_usd=1_000,
+        trade_buffer_fraction=0.04,
+        trade_buffer_usd=1,
+    )
+    store = PaperStateStore(tmp_path)
+    strategy = AutonomousPaperStrategy(settings, store)
+    strategy.run_cycle([_opportunity("AAA", 0.20)], {"AAA": (100, 100)}, now=NOW)
+    state = store.load()
+    state.positions["AAA"].spot_quantity = 5
+    state.positions["AAA"].perp_quantity = 5
+    store.save(state)
+
+    report = strategy.run_cycle(
+        [_opportunity("AAA", 0.20)],
+        {"AAA": (100, 100)},
+        now=NOW + timedelta(minutes=5),
+    )
+
+    resize = next(action for action in report.actions if action.action == "RESIZE")
+    assert "buffer edge" in resize.detail
+    # Capital/margin limit is $1,000 and a 4% full buffer has a $980 lower edge.
+    assert store.load().positions["AAA"].spot_notional(100) == pytest.approx(980)
+
+
 def test_stale_data_and_capital_limits_prevent_entries(tmp_path):
     settings = _settings(
         stale_data_seconds=60,
@@ -242,7 +270,8 @@ def test_stale_data_and_capital_limits_prevent_entries(tmp_path):
         now=NOW,
     )
     assert report.active_coins == ("AAA", "BBB")
-    assert report.deployed_notional_usd == pytest.approx(1_500)
+    # Fixed slot caps leave unused cash rather than concentrating into too few names.
+    assert report.deployed_notional_usd == pytest.approx(1_000)
     assert report.rejection_counts[RejectionCode.STALE_DATA] == 1
 
 

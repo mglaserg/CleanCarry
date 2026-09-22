@@ -45,6 +45,19 @@ class HyperliquidInfoClient:
     def l2_book(self, market: str) -> Any:
         return self.post_info({"type": "l2Book", "coin": market})
 
+    def candle_snapshot(self, market: str, interval: str, start_ms: int, end_ms: int) -> Any:
+        return self.post_info(
+            {
+                "type": "candleSnapshot",
+                "req": {
+                    "coin": market,
+                    "interval": interval,
+                    "startTime": start_ms,
+                    "endTime": end_ms,
+                },
+            }
+        )
+
     def clearinghouse_state(self, address: str) -> Any:
         return self.post_info({"type": "clearinghouseState", "user": address})
 

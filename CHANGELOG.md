@@ -28,13 +28,28 @@ behavior, safety, and architecture changes rather than listing every edited file
 - Autonomous lifecycle tests covering selection, limits, hold/exit hysteresis, partial and rejected
   legs, recovery, duplicate actions, stale data, hedge correction, redeployment, and restart.
 - Hardened autonomous shadow systemd service and ADR 0004 defining the future Conductor boundary.
+- ADR 0005 and a RobotWealth-aligned production strategy: 96-hour arithmetic funding mean,
+  five-day $50M average-volume universe, 30%/10% net-APR hysteresis, equal 20-slot nominal sizing,
+  20% modeled perp collateral, and a percentage buffer that trades to its edge.
+- Daily spot/perp candle retrieval and archives for the five-day dollar-volume gate.
+- Direct Hyperliquid API-wallet execution with persistent arming, deterministic client order IDs,
+  paired-leg recovery, fail-closed reconciliation, hard live limits, and equity-based compounding.
+- A non-restarting systemd live service and ADR 0006 documenting the user-authorized execution
+  boundary and its pre-evidence risks.
 
 ### Changed
 
+- Replaced the Lubuntu `python3-venv`/`pip` bootstrap with a pinned system-wide `uv` install and a
+  locked production sync; reinstalls now preserve operator configuration and runtime evidence.
 - Cleared the existing Ruff baseline and narrowed per-market upstream exception handling to expected
   HTTP/decoding failures.
 - Made snapshot and time-series Parquet writes atomic and collision-resistant at microsecond
   filename resolution.
+- Corrected Hyperliquid spot eligibility to accept documented `@index` USDC markets; the
+  market-level `isCanonical` flag describes naming and previously excluded valid HYPE and other
+  exact-name spot/perpetual pairs.
+- Matched spot contexts by their returned `coin` identifier instead of list position; current API
+  context arrays include additional indexed entries and are not positionally aligned to metadata.
 
 ## 0.1.0 — 2026-09-10
 

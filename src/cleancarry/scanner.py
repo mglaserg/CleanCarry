@@ -45,6 +45,35 @@ def _funding_vol(values: list[float], lookback: int = 72) -> float | None:
     return statistics.stdev(tail)
 
 
+def _mean(values: list[float], lookback: int) -> float | None:
+    tail = [value for value in values[-lookback:] if _isfinite(value)]
+    if len(tail) < lookback:
+        return None
+    return statistics.fmean(tail)
+
+
+def _average_candle_notional(
+    candles: Any, lookback_days: int, end_ms: int
+) -> tuple[float | None, int]:
+    if not isinstance(candles, list):
+        return None, 0
+    observations: list[tuple[int, float]] = []
+    for candle in candles:
+        if not isinstance(candle, dict):
+            continue
+        timestamp = int(_f(candle.get("T"), -1))
+        close = _f(candle.get("c"))
+        volume = _f(candle.get("v"))
+        notional = close * volume
+        if 0 <= timestamp <= end_ms and _isfinite(notional) and notional >= 0:
+            observations.append((timestamp, notional))
+    observations.sort(key=lambda item: item[0])
+    tail = observations[-lookback_days:]
+    if len(tail) < lookback_days:
+        return None, len(tail)
+    return statistics.fmean(value for _, value in tail), len(tail)
+
+
 def _book_spread_bps(book: Any) -> float | None:
     try:
         levels = book["levels"]
@@ -129,8 +158,16 @@ def build_intersection(
             perp[coin] = {"meta": meta, "ctx": ctx}
 
     tokens = {int(t["index"]): t for t in spot_meta.get("tokens", []) if "index" in t}
+    spot_contexts = {
+        str(ctx.get("coin")): ctx
+        for ctx in spot_ctxs
+        if isinstance(ctx, dict) and ctx.get("coin") is not None
+    }
     rows: list[dict[str, Any]] = []
-    for market, ctx in zip(spot_meta.get("universe", []), spot_ctxs):
+    for market in spot_meta.get("universe", []):
+        ctx = spot_contexts.get(str(market.get("name", "")))
+        if ctx is None:
+            continue
         token_ids = market.get("tokens", [])
         if len(token_ids) != 2:
             continue
@@ -139,9 +176,9 @@ def build_intersection(
         base_name = str(base.get("name", ""))
         quote_name = str(quote.get("name", ""))
         perp_name = aliases.get(base_name, base_name)
-        # V0.1 deliberately restricts clean carry to canonical USDC-quoted spot.
-        if not bool(market.get("isCanonical", False)):
-            continue
+        # Hyperliquid uses `@index` and isCanonical=false for most valid USDC spot pairs.
+        # Eligibility is anchored to the canonical USDC quote token plus an exact or explicitly
+        # configured base/perp mapping; the market-level isCanonical flag is only naming metadata.
         if quote_name != "USDC" or perp_name not in perp:
             continue
         rows.append(
@@ -171,13 +208,28 @@ def expected_funding_rate(
     return sum(v * w for v, w in valid) / total_w
 
 
-def score_market(market: CarryMarket, settings: Settings) -> Opportunity:
-    expected = expected_funding_rate(
-        market.current_funding_hourly,
-        market.predicted_funding_hourly,
-        market.ewma_24h,
-        market.ewma_72h,
-    )
+def score_market(
+    market: CarryMarket,
+    settings: Settings,
+    *,
+    forecast_method: str | None = None,
+) -> Opportunity:
+    method = forecast_method or settings.funding_forecast_method
+    if method == "rw_mean_96h":
+        expected = (
+            market.mean_funding_hourly
+            if market.mean_funding_hourly is not None
+            else math.nan
+        )
+    elif method == "legacy_ensemble":
+        expected = expected_funding_rate(
+            market.current_funding_hourly,
+            market.predicted_funding_hourly,
+            market.ewma_24h,
+            market.ewma_72h,
+        )
+    else:
+        raise ValueError(f"unknown funding forecast method: {method}")
     gross_apr = expected * HOURS_PER_YEAR
 
     spread_cost = (market.spot_spread_bps or 0.0) + (market.perp_spread_bps or 0.0)
@@ -186,12 +238,24 @@ def score_market(market: CarryMarket, settings: Settings) -> Opportunity:
     cost_apr = cost_fraction * HOURS_PER_YEAR / max(settings.expected_hold_hours, 1)
     net_apr = gross_apr - cost_apr - settings.basis_risk_buffer_apr
 
+    if market.volume_history_days is None:
+        spot_volume = market.spot_day_volume_usd
+        perp_volume = market.perp_day_volume_usd
+    else:
+        spot_volume = market.spot_average_day_volume_usd or 0.0
+        perp_volume = market.perp_average_day_volume_usd or 0.0
+
     reasons: list[str] = []
     if (
-        market.spot_day_volume_usd < settings.min_spot_day_volume_usd
-        or market.perp_day_volume_usd < settings.min_perp_day_volume_usd
+        spot_volume < settings.min_spot_day_volume_usd
+        or perp_volume < settings.min_perp_day_volume_usd
     ):
         reasons.append(RejectionCode.INSUFFICIENT_VOLUME)
+    if (
+        market.volume_history_days is not None
+        and market.volume_history_days < settings.volume_lookback_days
+    ):
+        reasons.append(RejectionCode.INSUFFICIENT_HISTORY)
     if settings.min_perp_open_interest_usd > 0 and (
         market.perp_open_interest_usd is None
         or market.perp_open_interest_usd < settings.min_perp_open_interest_usd
@@ -199,16 +263,19 @@ def score_market(market: CarryMarket, settings: Settings) -> Opportunity:
         reasons.append(RejectionCode.INSUFFICIENT_OPEN_INTEREST)
     if abs(market.basis_bps) > settings.max_abs_basis_bps:
         reasons.append(RejectionCode.BASIS_TOO_WIDE)
-    if market.current_funding_hourly <= 0:
+    if market.predicted_funding_hourly is None:
         reasons.append(RejectionCode.FUNDING_TOO_LOW)
-    if market.predicted_funding_hourly is None or market.predicted_funding_hourly <= 0:
-        reasons.append(RejectionCode.FUNDING_TOO_LOW)
-    if market.ewma_24h is None or (
+    history_missing = (
         market.funding_history_count > 0
         and market.funding_history_count < settings.min_funding_history
-    ):
+    )
+    if method == "rw_mean_96h":
+        history_missing = history_missing or market.mean_funding_hourly is None
+    else:
+        history_missing = history_missing or market.ewma_24h is None
+    if history_missing:
         reasons.append(RejectionCode.INSUFFICIENT_HISTORY)
-    elif market.ewma_24h <= 0:
+    if not _isfinite(expected) or expected <= 0:
         reasons.append(RejectionCode.FUNDING_TOO_LOW)
     for spread in (market.spot_spread_bps, market.perp_spread_bps):
         if spread is None or spread > settings.max_spread_bps_per_leg:
@@ -226,8 +293,8 @@ def score_market(market: CarryMarket, settings: Settings) -> Opportunity:
 
     reasons = list(dict.fromkeys(reasons))
     capacity = min(
-        market.spot_day_volume_usd * settings.liquidity_participation,
-        market.perp_day_volume_usd * settings.liquidity_participation,
+        spot_volume * settings.liquidity_participation,
+        perp_volume * settings.liquidity_participation,
         market.spot_depth_usd or 0.0,
         market.perp_depth_usd or 0.0,
     )
@@ -248,8 +315,8 @@ def score_market(market: CarryMarket, settings: Settings) -> Opportunity:
             if market.predicted_funding_hourly is not None
             else None
         ),
-        spot_day_volume_usd=market.spot_day_volume_usd,
-        perp_day_volume_usd=market.perp_day_volume_usd,
+        spot_day_volume_usd=spot_volume,
+        perp_day_volume_usd=perp_volume,
         spot_spread_bps=market.spot_spread_bps,
         perp_spread_bps=market.perp_spread_bps,
         eligible=not reasons,
@@ -257,6 +324,7 @@ def score_market(market: CarryMarket, settings: Settings) -> Opportunity:
         rejection_codes=tuple(reasons),
         capacity_usd=capacity,
         observed_at_utc=market.observed_at_utc,
+        forecast_method=method,
     )
 
 
@@ -299,6 +367,7 @@ def scan(
         base_rows.append(
             {
                 "coin": row["coin"],
+                "spot_token": row["spot_token"],
                 "spot_market": row["spot_market"],
                 "spot_mid": smid,
                 "perp_mid": pmid,
@@ -326,9 +395,11 @@ def scan(
     book_names = {r["coin"] for r in ranked[: settings.book_candidates]}
     now = client.now_ms()
     start = now - settings.history_hours * 60 * 60 * 1000
+    candle_start = now - (settings.volume_lookback_days + 2) * 24 * 60 * 60 * 1000
 
     histories: dict[str, list[dict[str, Any]]] = {}
     books: dict[str, tuple[float | None, float | None, float | None, float | None]] = {}
+    volume_candles: dict[str, dict[str, Any]] = {}
     for row in ranked:
         coin = row["coin"]
         if coin in history_names:
@@ -350,13 +421,34 @@ def scan(
             except (httpx.HTTPError, ValueError):
                 spot_spread, spot_depth = None, None
             books[coin] = (spot_spread, perp_spread, spot_depth, perp_depth)
+            try:
+                perp_candles = client.candle_snapshot(coin, "1d", candle_start, now)
+            except (httpx.HTTPError, ValueError):
+                perp_candles = []
+            try:
+                spot_candles = client.candle_snapshot(
+                    row["spot_market"], "1d", candle_start, now
+                )
+            except (httpx.HTTPError, ValueError):
+                spot_candles = []
+            volume_candles[coin] = {"spot": spot_candles, "perp": perp_candles}
 
     markets: list[CarryMarket] = []
     for row in base_rows:
-        hist = histories.get(row["coin"], [])
+        hist = sorted(
+            histories.get(row["coin"], []),
+            key=lambda item: _f(item.get("time"), -1) if isinstance(item, dict) else -1,
+        )
         rates = [_f(x.get("fundingRate")) for x in hist if isinstance(x, dict)]
         spot_spread, perp_spread, spot_depth, perp_depth = books.get(
             row["coin"], (None, None, None, None)
+        )
+        candles = volume_candles.get(row["coin"], {})
+        spot_average_volume, spot_volume_days = _average_candle_notional(
+            candles.get("spot", []), settings.volume_lookback_days, now
+        )
+        perp_average_volume, perp_volume_days = _average_candle_notional(
+            candles.get("perp", []), settings.volume_lookback_days, now
         )
         markets.append(
             CarryMarket(
@@ -364,11 +456,15 @@ def scan(
                 ewma_24h=_ewma(rates[-24:], 24),
                 ewma_72h=_ewma(rates[-72:], 72),
                 funding_vol_72h=_funding_vol(rates, 72),
+                mean_funding_hourly=_mean(rates, settings.funding_mean_hours),
                 spot_spread_bps=spot_spread,
                 perp_spread_bps=perp_spread,
                 spot_depth_usd=spot_depth,
                 perp_depth_usd=perp_depth,
                 funding_history_count=len([rate for rate in rates if _isfinite(rate)]),
+                spot_average_day_volume_usd=spot_average_volume,
+                perp_average_day_volume_usd=perp_average_volume,
+                volume_history_days=min(spot_volume_days, perp_volume_days),
             )
         )
 
@@ -410,6 +506,7 @@ def scan(
         "spot_payload": spot_payload,
         "predicted_raw": predicted_raw,
         "histories": histories,
+        "volume_candles": volume_candles,
         "universe": universe,
         "observed_at_utc": observed_at,
     }
@@ -422,9 +519,12 @@ def normalize_perp_contexts(payload: Any) -> list[dict[str, Any]]:
 
 
 def normalize_spot_contexts(payload: Any) -> list[dict[str, Any]]:
-    meta, ctxs = payload
-    markets = meta.get("universe", [])
-    return [{"market": m.get("name"), **c} for m, c in zip(markets, ctxs)]
+    _, ctxs = payload
+    return [
+        {"market": context.get("coin"), **context}
+        for context in ctxs
+        if isinstance(context, dict)
+    ]
 
 
 def normalize_predicted(payload: Any) -> list[dict[str, Any]]:

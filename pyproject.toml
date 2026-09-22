@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "cleancarry"
 version = "0.1.0"
-description = "Audit-first Hyperliquid spot/perp carry research and autonomous shadow strategy"
+description = "Audit-first Hyperliquid spot/perp carry research, shadow, and guarded execution"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -15,6 +15,7 @@ dependencies = [
   "pyarrow>=17,<22",
   "rich>=13,<15",
   "typer>=0.12,<1",
+  "hyperliquid-python-sdk>=0.24,<0.25",
 ]
 
 [project.optional-dependencies]

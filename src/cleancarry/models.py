@@ -36,6 +36,8 @@ class CarryMarket:
     ewma_72h: float | None
     funding_vol_72h: float | None
     basis_bps: float
+    spot_token: str | None = None
+    mean_funding_hourly: float | None = None
     spot_spread_bps: float | None = None
     perp_spread_bps: float | None = None
     observed_at_utc: str | None = None
@@ -43,6 +45,9 @@ class CarryMarket:
     spot_depth_usd: float | None = None
     perp_depth_usd: float | None = None
     funding_history_count: int = 0
+    spot_average_day_volume_usd: float | None = None
+    perp_average_day_volume_usd: float | None = None
+    volume_history_days: int | None = None
 
     def asdict(self) -> dict[str, Any]:
         return asdict(self)
@@ -70,6 +75,7 @@ class Opportunity:
     rejection_codes: tuple[str, ...] = ()
     capacity_usd: float = 0.0
     observed_at_utc: str | None = None
+    forecast_method: str = "legacy_ensemble"
 
     def asdict(self) -> dict[str, Any]:
         return asdict(self)

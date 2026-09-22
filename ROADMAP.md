@@ -40,6 +40,8 @@ that can trade. Operational burn-in and data-quality monitoring continue as cros
   the initial transparent model; exact settlement timing and market impact remain**;
 - compare the current ensemble with current-funding-only and simpler baselines — **DONE for the
   ensemble/current-only comparison; additional baselines remain**;
+- replay the RobotWealth-aligned 96-hour arithmetic-mean production forecast against the legacy
+  ensemble and current-only baselines — **NOT STARTED on retained real history**;
 - measure holding-period distribution, turnover, drawdown, and tail outcomes;
 - segment results by liquidity, basis, funding volatility, and data completeness;
 - save reproducible study artifacts with configuration, data identity, code version, and results —
@@ -83,6 +85,10 @@ from partial-leg and restart scenarios, and document whether observed costs rema
 assumptions. Any unexplained reconciliation break resets the evidence window.
 
 ## M4 — Tiny live subaccount — QUEUED
+
+**Implementation status:** PARTIAL at explicit user direction. A default-off direct Hyperliquid
+API-wallet path, persistent arming, hard caps, paired recovery, reconciliation, and equity-based
+compounding exist. No real order has been sent, and the M2/M3 evidence gates are not passed.
 
 ### Prerequisites
 

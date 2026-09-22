@@ -29,3 +29,7 @@ the old decision.
   hashed artifacts with pre-registered decisions.
 - `0004-autonomous-shadow-strategy-boundary.md` — the production decision pipeline may run in
   read-only or persistent shadow mode while live execution remains prohibited.
+- `0005-robotwealth-basis-strategy-semantics.md` — the supplied RobotWealth basis document defines
+  the production forecast, universe, hysteresis, equal-slot sizing, and percentage buffer.
+- `0006-direct-hyperliquid-live-execution.md` — explicit user authorization for direct, persistently
+  armed, capped Hyperliquid API-wallet execution and equity-based compounding.

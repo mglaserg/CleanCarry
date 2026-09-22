@@ -14,6 +14,14 @@ from .account import summarize_account
 from .archive import upsert_timeseries, write_snapshot
 from .config import Settings
 from .hyperliquid import HyperliquidInfoClient
+from .live import (
+    ARM_CONFIRMATION,
+    HyperliquidLiveExecutor,
+    LivePairExecutor,
+    LiveStateStore,
+    account_equity_usd,
+)
+from .models import RejectionCode
 from .paper import AutonomousPaperStrategy, PaperStateStore
 from .research import StudyConfig, run_carry_study
 from .scanner import (
@@ -166,7 +174,7 @@ def paper_control(
     action: str = typer.Argument(..., help="pause, resume, safe, close, close-all, or kill"),
     coin: str | None = typer.Option(None, "--coin", help="Required for close."),
 ) -> None:
-    """Change persistent shadow controls; live trading remains impossible."""
+    """Change persistent shadow controls; this never arms the separate live executor."""
     s = _settings()
     store = PaperStateStore(s.state_dir)
     state = store.load()
@@ -325,17 +333,220 @@ def replay(
     console.print(f"Manifest: {result.manifest_path}")
 
 
-@app.command()
-def live() -> None:
-    """Safety latch: live order transmission is intentionally unavailable."""
+@app.command("live-control")
+def live_control(
+    action: str = typer.Argument(..., help="arm, disarm, safe, or acknowledge"),
+    confirm: str | None = typer.Option(None, "--confirm"),
+) -> None:
+    """Persistently arm or stop direct Hyperliquid execution."""
     s = _settings()
-    if not s.live_trading_enabled:
-        console.print("[yellow]LIVE_TRADING_ENABLED=false. Live trading is disarmed.[/yellow]")
-    console.print(
-        "[bold]CleanCarry contains no signer or order-sending code.[/bold] "
-        "Complete and approve the paper/reconciliation gate first."
+    store = LiveStateStore(s.state_dir)
+    state = store.load()
+    normalized = action.strip().lower()
+    if normalized == "arm":
+        if confirm != ARM_CONFIRMATION:
+            raise typer.BadParameter(f"arming requires --confirm {ARM_CONFIRMATION}")
+        if not s.live_trading_enabled:
+            raise typer.BadParameter("set LIVE_TRADING_ENABLED=true before arming")
+        if not s.account_address or not s.api_wallet_private_key:
+            raise typer.BadParameter(
+                "HL_ACCOUNT_ADDRESS and HL_API_WALLET_PRIVATE_KEY are required"
+            )
+        state.status = "ARMED"
+        state.account_address = s.subaccount_address or s.account_address
+    elif normalized in {"disarm", "safe"}:
+        state.status = "DISARMED" if normalized == "disarm" else "SAFE_MODE"
+    elif normalized == "acknowledge":
+        if confirm != ARM_CONFIRMATION:
+            raise typer.BadParameter(f"acknowledgement requires --confirm {ARM_CONFIRMATION}")
+        state.pending_action = None
+        state.status = "SAFE_MODE"
+    else:
+        raise typer.BadParameter("action must be arm, disarm, safe, or acknowledge")
+    store.save(state)
+    console.print(f"Live control accepted: {normalized}; status={state.status}")
+
+
+@app.command()
+def live(
+    once: bool = typer.Option(False, "--once", help="Run one live cycle instead of continuously."),
+) -> None:
+    """Run direct, persistently armed Hyperliquid spot/perpetual execution."""
+    s = _settings()
+    store = LiveStateStore(s.state_dir)
+    state = store.load()
+    if not s.live_trading_enabled or state.status != "ARMED":
+        raise typer.BadParameter(
+            "live execution is disarmed; set LIVE_TRADING_ENABLED=true and run "
+            f"live-control arm --confirm {ARM_CONFIRMATION}"
+        )
+    if state.pending_action is not None:
+        state.status = "SAFE_MODE"
+        store.save(state)
+        raise typer.BadParameter("unresolved prior live action; entered SAFE_MODE")
+    trading_address = s.subaccount_address or s.account_address
+    if not trading_address or state.account_address != trading_address:
+        raise typer.BadParameter("armed account does not match current account configuration")
+    venue = HyperliquidLiveExecutor(s)
+    executor = LivePairExecutor(s, store, venue)
+
+    while True:
+        started = datetime.now(UTC)
+        try:
+            _run_live_cycle(s, store, state, executor, trading_address, started)
+        except Exception:
+            state.status = "SAFE_MODE"
+            store.save(state)
+            raise
+        if once:
+            return
+        elapsed = (datetime.now(UTC) - started).total_seconds()
+        time.sleep(max(s.strategy_cycle_seconds - elapsed, 1))
+
+
+def _run_live_cycle(
+    s: Settings,
+    store: LiveStateStore,
+    state,
+    executor: LivePairExecutor,
+    trading_address: str,
+    now: datetime,
+) -> None:
+    with HyperliquidInfoClient(s.base_url) as client:
+        markets, opportunities, raw = scan(client, s)
+        perp_state = client.clearinghouse_state(trading_address)
+        spot_state = client.spot_clearinghouse_state(trading_address)
+    _archive_scan(s, markets, opportunities, raw)
+    market_by_coin = {market.coin: market for market in markets}
+    opportunity_by_coin = {item.coin: item for item in opportunities}
+    spot_prices = {(market.spot_token or market.coin): market.spot_mid for market in markets}
+    equity = account_equity_usd(perp_state, spot_state, spot_prices)
+    if equity <= 0:
+        raise RuntimeError("live account equity is zero or unavailable")
+    state.last_equity_usd = equity
+    state.high_water_equity_usd = max(state.high_water_equity_usd or equity, equity)
+    _reconcile_live_positions(state, perp_state, spot_state, s.hedge_tolerance_bps)
+
+    cycle_id = now.strftime("%Y%m%dT%H%M%S%fZ")
+    for coin in sorted(state.positions):
+        opportunity = opportunity_by_coin.get(coin)
+        structural = (
+            set(opportunity.rejection_codes) - {RejectionCode.EXPECTED_NET_CARRY_TOO_LOW}
+            if opportunity
+            else {"MARKET_MISSING"}
+        )
+        if structural or opportunity.expected_net_apr < s.exit_net_apr:
+            executor.exit(state, coin, f"{cycle_id}:EXIT:{coin}")
+            console.print(f"[yellow]LIVE EXIT {coin}[/yellow]")
+            state.last_cycle_at_utc = now.isoformat()
+            store.save(state)
+            return
+
+    deployment_limit = min(
+        equity * s.live_capital_fraction,
+        s.live_max_total_deployment_usd,
+        s.max_total_deployment_usd,
     )
-    raise typer.Exit(code=2)
+    slot_target = deployment_limit / (s.max_positions * (1 + s.perp_margin_fraction))
+    for coin in sorted(state.positions):
+        market = market_by_coin.get(coin)
+        opportunity = opportunity_by_coin.get(coin)
+        if market is None or opportunity is None:
+            continue
+        target = min(slot_target, s.max_per_asset_usd, opportunity.capacity_usd)
+        current = state.positions[coin].quantity * market.spot_mid
+        half_buffer = target * s.trade_buffer_fraction / 2
+        if current < target - half_buffer:
+            desired = target - half_buffer - current
+            notional = min(desired, s.live_max_order_usd)
+            if notional >= s.live_min_order_usd:
+                executor.enter(
+                    state,
+                    coin=coin,
+                    spot_market=market.spot_market,
+                    spot_token=market.spot_token or market.coin,
+                    quantity=notional / market.spot_mid,
+                    target_notional_usd=target,
+                    action_id=f"{cycle_id}:INCREASE:{coin}",
+                )
+                console.print(f"[green]LIVE INCREASE {coin} {_money(notional)}[/green]")
+                return
+        if current > target + half_buffer:
+            desired = current - (target + half_buffer)
+            notional = min(desired, s.live_max_order_usd)
+            if notional >= s.live_min_order_usd:
+                executor.reduce(
+                    state,
+                    coin=coin,
+                    quantity=notional / market.spot_mid,
+                    target_notional_usd=target,
+                    action_id=f"{cycle_id}:REDUCE:{coin}",
+                )
+                console.print(f"[yellow]LIVE REDUCE {coin} {_money(notional)}[/yellow]")
+                return
+
+    ranked = sorted(
+        (item for item in opportunities if item.eligible and item.coin not in state.positions),
+        key=lambda item: (-item.expected_net_apr, item.coin),
+    )
+    current_deployment = sum(
+        position.quantity * market_by_coin[coin].spot_mid
+        for coin, position in state.positions.items()
+        if coin in market_by_coin
+    )
+    for opportunity in ranked:
+        if len(state.positions) >= s.max_positions:
+            break
+        market = market_by_coin[opportunity.coin]
+        notional = min(
+            slot_target,
+            s.live_max_order_usd,
+            s.max_per_asset_usd,
+            opportunity.capacity_usd,
+            max(deployment_limit - current_deployment, 0),
+        )
+        if notional < s.live_min_order_usd:
+            continue
+        executor.enter(
+            state,
+            coin=market.coin,
+            spot_market=market.spot_market,
+            spot_token=market.spot_token or market.coin,
+            quantity=notional / market.spot_mid,
+            target_notional_usd=slot_target,
+            action_id=f"{cycle_id}:ENTER:{market.coin}",
+        )
+        console.print(f"[bold green]LIVE ENTER {market.coin} {_money(notional)}[/bold green]")
+        break
+    state.last_cycle_at_utc = now.isoformat()
+    store.save(state)
+    console.print(
+        f"Live cycle complete | equity={_money(equity)} | target deployment={_money(deployment_limit)}"
+    )
+
+
+def _reconcile_live_positions(state, perp_state, spot_state, tolerance_bps: float) -> None:
+    perp_sizes = {
+        wrapper.get("position", {}).get("coin"): float(
+            wrapper.get("position", {}).get("szi", 0) or 0
+        )
+        for wrapper in perp_state.get("assetPositions", [])
+    }
+    spot_sizes = {
+        balance.get("coin"): float(balance.get("total", 0) or 0)
+        for balance in spot_state.get("balances", [])
+    }
+    tolerance = tolerance_bps / 10_000
+    for position in state.positions.values():
+        spot_quantity = spot_sizes.get(position.spot_token, 0.0)
+        short_quantity = max(-perp_sizes.get(position.coin, 0.0), 0.0)
+        allowed = max(position.quantity * tolerance, 1e-10)
+        if (
+            abs(spot_quantity - position.quantity) > allowed
+            or abs(short_quantity - position.quantity) > allowed
+        ):
+            state.status = "SAFE_MODE"
+            raise RuntimeError(f"live reconciliation mismatch for {position.coin}")
 
 
 def _pct(x: float | None) -> str:
@@ -383,6 +594,20 @@ def _archive_scan(s: Settings, markets: list, opps: list, raw: dict) -> None:
                 raw_dir / f"funding_history_{coin}.parquet",
                 subset=["coin", "time"],
                 sort_by=["coin", "time"],
+            )
+    for coin, legs in raw.get("volume_candles", {}).items():
+        rows = [
+            {**candle, "coin": coin, "leg": leg}
+            for leg, candles in legs.items()
+            for candle in candles
+            if isinstance(candle, dict)
+        ]
+        if rows:
+            upsert_timeseries(
+                rows,
+                raw_dir / f"daily_volume_{coin}.parquet",
+                subset=["coin", "leg", "t"],
+                sort_by=["coin", "leg", "t"],
             )
     write_snapshot([m.asdict() for m in markets], derived_dir, "carry_markets")
     write_snapshot([o.asdict() for o in opps], derived_dir, "opportunities")

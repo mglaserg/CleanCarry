@@ -1,0 +1,22 @@
+[Unit]
+Description=CleanCarry direct Hyperliquid live strategy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cleancarry
+Group=cleancarry
+WorkingDirectory=/opt/cleancarry
+EnvironmentFile=/opt/cleancarry/.env
+ExecStart=/opt/cleancarry/.venv/bin/cleancarry live
+Restart=no
+StandardOutput=append:/opt/cleancarry/logs/live.log
+StandardError=append:/opt/cleancarry/logs/live.err.log
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/cleancarry/data /opt/cleancarry/logs /opt/cleancarry/state
+
+[Install]
+WantedBy=multi-user.target

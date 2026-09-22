@@ -2,9 +2,9 @@
 
 ## Product boundary
 
-CleanCarry is an audit-first research stack for same-venue Hyperliquid spot/perpetual carry. Its
-current job is to discover candidates, estimate cost-aware carry, and preserve the observations
-needed to test whether the apparent edge survives. It does not currently execute trades.
+CleanCarry is an audit-first research and execution stack for same-venue Hyperliquid spot/perpetual
+carry. It discovers candidates, estimates cost-aware carry, preserves research evidence, and can
+route explicitly armed, tightly capped paired orders through an isolated live adapter.
 
 The target position is:
 
@@ -62,7 +62,7 @@ data/derived/carry_markets_*.parquet
  manifest.json + summary.json + trade Parquet
 ```
 
-The autonomous boundary is paper-only:
+The autonomous research boundary is read-only/paper, with a separate direct live adapter:
 
 ```text
 all venue perps -> canonical-USDC hedge map -> explicit filter reasons
@@ -73,7 +73,8 @@ all venue perps -> canonical-USDC hedge map -> explicit filter reasons
 ```
 
 `cleancarry autonomous --mode read_only` stops at intentions. `--mode shadow` changes only local
-paper state. Neither path has a signer or venue order method.
+paper state. The separately armed `cleancarry live` path uses an API-wallet signer, persistent live
+state, hard caps, paired IOC execution/recovery, and account reconciliation.
 
 ## Module responsibilities
 
@@ -90,22 +91,29 @@ paper state. Neither path has a signer or venue order method.
 | `research/replay.py` | Signal preparation and chronological hysteresis replay | Archive discovery or study persistence |
 | `research/studies.py` | Strict archive loading, hashes, GO/KILL rule, atomic study artifacts | Live collection or order execution |
 | `paper.py` | Portfolio selection, shadow paired execution, paper state, reconciliation, controls | Venue signing or live order transport |
+| `live.py` | API-wallet signing, paired live orders/recovery, persistent arming state | Signal forecasting or read-only collection |
 
 ## Opportunity pipeline
 
 1. Fetch perpetual metadata/contexts, spot metadata/contexts, and predicted funding.
-2. Build the intersection using only canonical USDC spot markets and matching perpetual names.
+2. Build the intersection using markets quoted by the canonical USDC token and matching perpetual
+   names. Hyperliquid's market-level `isCanonical` flag is naming metadata; most valid `@index`
+   USDC markets set it false.
 3. Apply the configured spot-to-perpetual alias map where HyperCore names differ.
-4. Rank the initial intersection by current funding and liquidity so expensive history/book calls
+4. Join spot contexts to metadata by the context's returned `coin` identifier. Context arrays may
+   contain additional indexed entries and are not assumed to be positionally aligned.
+5. Rank the initial intersection by current funding and liquidity so expensive history/book/candle
+   calls
    are spent on plausible names.
-5. For configured candidate counts, fetch funding history and both books; derive spread and
-   conservative two-sided USD depth inside the configured impact band.
-6. Normalize each valid pair into `CarryMarket`.
-7. Compute a simple expected hourly funding rate and convert it to gross APR.
-8. Subtract amortized round-trip fees/spreads and the configured basis-risk buffer.
-9. Apply conservative eligibility gates and persist explicit reasons for every discovered perp.
-10. Rank only eligible survivors by expected net APR.
-11. Display results and, by default, archive raw-normalized and derived records.
+6. For configured candidate counts, fetch funding history, five days of daily candles, and both
+   books; derive average daily dollar volume, spread, and conservative two-sided USD depth inside
+   the configured impact band.
+7. Normalize each valid pair into `CarryMarket`.
+8. Compute a simple expected hourly funding rate and convert it to gross APR.
+9. Subtract amortized round-trip fees/spreads and the configured basis-risk buffer.
+10. Apply conservative eligibility gates and persist explicit reasons for every discovered perp.
+11. Rank only eligible survivors by expected net APR.
+12. Display results and, by default, archive raw-normalized and derived records.
 
 The upstream calls are sequential observations, not an atomic market snapshot. Each archived file
 records collection time, but consumers must not assume all fields were observed simultaneously.
@@ -116,6 +124,8 @@ records collection time, but consumers must not assume all fields were observed 
 - Selection is deterministic by descending expected net APR, then coin name.
 - Notional is capped by book/volume capacity, per-asset limit, total deployment, strategy capital,
   modeled perpetual collateral, margin utilization, and available position slots.
+- The deployment limit is divided into 20 equal slots by default. Fewer qualifying pairs leave
+  unused cash rather than concentrating capital into the remaining names.
 - A paired shadow entry is accepted only when both simulated fills exist and their notional mismatch
   is inside the hedge tolerance. Matched partial fills may open a smaller hedged position.
 - Unmatched fills are flattened in simulation. Failed recovery persists unresolved exposure and
@@ -124,6 +134,8 @@ records collection time, but consumers must not assume all fields were observed 
 - Exits happen before entries so released capital can be redeployed in the same cycle.
 - Atomic `state/paper_state.json` is the restart checkpoint; `state/paper_ledger.jsonl` is the
   append-only audit trail. Derived strategy-cycle snapshots preserve inspectable decisions.
+- Target resizing uses a percentage no-trade region. Once deviation exceeds half the configured
+  full buffer, both legs move only to the corresponding buffer edge.
 - Operator pause/safe modes prevent new entries. Close requests execute on the next cycle.
 
 CleanCarry owns universe requirements, forecasting, eligibility, ranking, allocation, hysteresis,
@@ -133,14 +145,15 @@ reimplement the strategy.
 
 ## Financial definitions and units
 
-The expected hourly funding estimate is:
+The production expected hourly funding estimate is:
 
 ```text
-0.25 * current + 0.35 * predicted + 0.25 * EWMA24 + 0.15 * EWMA72
+arithmetic mean(last 96 hourly funding observations)
 ```
 
-Weights renormalize across inputs that are unavailable to the function. Eligibility is stricter:
-missing predicted funding, missing funding history, or missing spreads makes a market ineligible.
+This implements the four-day funding forecast in the supplied RobotWealth basis document. The older
+current/predicted/EWMA ensemble remains a named legacy replay comparator. Eligibility fails closed
+when predicted funding, required history, five-day volume, or observed spreads/depth are missing.
 
 ```text
 gross funding APR = expected hourly funding * 8,760
@@ -172,6 +185,7 @@ data/raw/
   spot_contexts_<UTC>.parquet
   predicted_fundings_<UTC>.parquet
   funding_history_<COIN>.parquet
+  daily_volume_<COIN>.parquet
   account_summary_<UTC>.parquet
   perp_positions_<UTC>.parquet
   spot_balances_<UTC>.parquet
@@ -217,8 +231,10 @@ model summaries, and limitations. `INSUFFICIENT_DATA` is distinct from `GO` and 
 
 ## Safety and correctness invariants
 
-- Current code contains no signer, private-key setting, exchange/order client, or order endpoint.
-- `LIVE_TRADING_ENABLED` is only a future-facing latch; setting it cannot enable trading in M1.
+- Signing and order submission are isolated in `live.py`; read-only and shadow paths do not construct
+  the signer or exchange client.
+- `LIVE_TRADING_ENABLED` alone is insufficient: persistent arming bound to the configured account is
+  also required.
 - Invalid/non-positive mids are dropped before scoring.
 - Unknown symbol relationships are excluded unless configured through the alias map.
 - Eligibility fails closed for required data that could not be observed.
@@ -226,8 +242,9 @@ model summaries, and limitations. `INSUFFICIENT_DATA` is distinct from `GO` and 
 - UTC is canonical for filenames and observation timestamps.
 - Historical replay must define a decision timestamp and prohibit observations after it.
 - Stored schemas and financial units must be migrated explicitly when changed.
-- `live` remains a hard stop even if `LIVE_TRADING_ENABLED=true`.
+- Live execution fails closed on unresolved actions or managed-position reconciliation mismatches.
 - Read-only and shadow use the same filter/rank/select logic; shadow adds only local simulated state.
+- The RobotWealth-aligned production forecast is `rw_mean_96h`; `legacy_ensemble` is research-only.
 
 ## Failure behavior
 

@@ -34,15 +34,14 @@ remain open.
 - Ships Lubuntu `systemd` timers.
 - Runs deterministic autonomous read-only or restart-safe shadow cycles with portfolio limits,
   hysteresis, paired-fill failure recovery, hedge monitoring, exits, and replacement.
-- `cleancarry live` is a hard stop: there is no signer or order-sending code.
+- Direct Hyperliquid execution is available through an API wallet but is default-off, persistently
+  armed, capped, reconciled, and isolated from the read-only scanner client.
 
-## Baseline score
+## RobotWealth-aligned production score
 
-The funding estimate is intentionally simple and inspectable:
-
-`25% current + 35% predicted + 25% EWMA24 + 15% EWMA72`
-
-Weights renormalize when a component is unavailable.
+The production funding forecast is the arithmetic mean of the last 96 hourly funding observations
+(four days), matching the supplied RobotWealth basis document. The older weighted ensemble remains
+available only as a legacy research comparator.
 
 The displayed expected net APR is:
 
@@ -52,18 +51,19 @@ where round-trip costs include a configurable fee assumption plus observed spot/
 
 This is a **scanner assumption**, not a claim that carry actually persists for that holding period. Milestone 2 will estimate persistence/realized holding periods from the archive and historical replay.
 
-## Initial gates
+## Initial RobotWealth-aligned gates
 
 Defaults live in `.env.example` and are intentionally configurable:
 
-- minimum spot 24h notional: $250k
-- minimum perp 24h notional: $1m
-- entry hurdle: 10% expected net APR
-- future exit hurdle: 5% expected net APR
+- minimum five-day average daily notional: $50m on each leg
+- entry hurdle: 30% expected net APR
+- exit hurdle: 10% expected net APR
 - maximum absolute spot/perp basis: 300 bp
 - maximum observed spread per leg: 35 bp
-- assumed holding period: 72h
-- assumed round-trip fees: 12 bp (set this to your actual fee tier before trading)
+- assumed holding period: 168h
+- assumed round-trip paired fees: 20 bp (four 5 bp leg trades; set this to your fee tier)
+- fixed equal slot cap across 20 pairs; unused slots remain cash
+- 3% percentage no-trade buffer; resize to the buffer edge after a breach
 - only canonical USDC spot pairs are eligible
 - missing funding history, predicted Hyperliquid funding, or observed top-of-book spread makes a candidate ineligible
 - basis-risk buffer: 2% APR
@@ -79,6 +79,11 @@ Copy/unzip the project onto the Lubuntu crypto machine, `cd` into it, then:
 sudoedit /opt/cleancarry/.env
 ```
 
+The installer uses `uv` exclusively for Python and dependency management. It installs a pinned `uv`
+binary in `/usr/local/bin`, syncs the committed `uv.lock` into `/opt/cleancarry/.venv`, and does not
+install or modify Ubuntu's `python3-pip` packages. Re-running it preserves `.env`, archived data,
+state, logs, and the uv cache.
+
 Set at least:
 
 ```bash
@@ -90,25 +95,30 @@ M1 does not need a private key.
 Test the scanner:
 
 ```bash
-sudo -u cleancarry /opt/cleancarry/.venv/bin/cleancarry opportunities --all --limit 30
+sudo -u cleancarry env HOME=/opt/cleancarry UV_CACHE_DIR=/opt/cleancarry/.cache/uv \
+  /usr/local/bin/uv run --project /opt/cleancarry --frozen --no-sync \
+  cleancarry opportunities --all --limit 30
 ```
 
 Read account state:
 
 ```bash
-sudo -u cleancarry /opt/cleancarry/.venv/bin/cleancarry status
+sudo -u cleancarry env HOME=/opt/cleancarry UV_CACHE_DIR=/opt/cleancarry/.cache/uv \
+  /usr/local/bin/uv run --project /opt/cleancarry --frozen --no-sync cleancarry status
 ```
 
 Archive realized funding:
 
 ```bash
-sudo -u cleancarry /opt/cleancarry/.venv/bin/cleancarry funding --days 7
+sudo -u cleancarry env HOME=/opt/cleancarry UV_CACHE_DIR=/opt/cleancarry/.cache/uv \
+  /usr/local/bin/uv run --project /opt/cleancarry --frozen --no-sync cleancarry funding --days 7
 ```
 
 Replay one archived pair through an inclusive UTC cutoff:
 
 ```bash
-sudo -u cleancarry /opt/cleancarry/.venv/bin/cleancarry replay BTC \
+sudo -u cleancarry env HOME=/opt/cleancarry UV_CACHE_DIR=/opt/cleancarry/.cache/uv \
+  /usr/local/bin/uv run --project /opt/cleancarry --frozen --no-sync cleancarry replay BTC \
   --as-of-utc 2026-09-21T12:00:00Z
 ```
 
@@ -132,31 +142,89 @@ tail -f /opt/cleancarry/logs/scan.log /opt/cleancarry/logs/scan.err.log
 Run one production decision cycle without changing paper state:
 
 ```bash
-cleancarry autonomous --mode read_only --once
+sudo -u cleancarry env HOME=/opt/cleancarry UV_CACHE_DIR=/opt/cleancarry/.cache/uv \
+  /usr/local/bin/uv run --project /opt/cleancarry --frozen --no-sync \
+  cleancarry autonomous --mode read_only --once
 ```
 
 Run one persistent shadow cycle:
 
 ```bash
-cleancarry autonomous --mode shadow --once
+sudo -u cleancarry env HOME=/opt/cleancarry UV_CACHE_DIR=/opt/cleancarry/.cache/uv \
+  /usr/local/bin/uv run --project /opt/cleancarry --frozen --no-sync \
+  cleancarry autonomous --mode shadow --once
 ```
 
 Inspect or control shadow state:
 
 ```bash
-cleancarry paper-status
-cleancarry paper-control pause
-cleancarry paper-control resume
-cleancarry paper-control close --coin BTC
-cleancarry paper-control close-all
-cleancarry paper-control kill
+sudo -u cleancarry env HOME=/opt/cleancarry UV_CACHE_DIR=/opt/cleancarry/.cache/uv \
+  /usr/local/bin/uv run --project /opt/cleancarry --frozen --no-sync \
+  cleancarry paper-status
+sudo -u cleancarry env HOME=/opt/cleancarry UV_CACHE_DIR=/opt/cleancarry/.cache/uv \
+  /usr/local/bin/uv run --project /opt/cleancarry --frozen --no-sync \
+  cleancarry paper-control pause
+sudo -u cleancarry env HOME=/opt/cleancarry UV_CACHE_DIR=/opt/cleancarry/.cache/uv \
+  /usr/local/bin/uv run --project /opt/cleancarry --frozen --no-sync \
+  cleancarry paper-control resume
+sudo -u cleancarry env HOME=/opt/cleancarry UV_CACHE_DIR=/opt/cleancarry/.cache/uv \
+  /usr/local/bin/uv run --project /opt/cleancarry --frozen --no-sync \
+  cleancarry paper-control close --coin BTC
+sudo -u cleancarry env HOME=/opt/cleancarry UV_CACHE_DIR=/opt/cleancarry/.cache/uv \
+  /usr/local/bin/uv run --project /opt/cleancarry --frozen --no-sync \
+  cleancarry paper-control close-all
+sudo -u cleancarry env HOME=/opt/cleancarry UV_CACHE_DIR=/opt/cleancarry/.cache/uv \
+  /usr/local/bin/uv run --project /opt/cleancarry --frozen --no-sync \
+  cleancarry paper-control kill
 ```
 
 After manual shadow cycles succeed, run unattended shadow mode directly or through systemd:
 
 ```bash
-cleancarry autonomous --mode shadow
+sudo -u cleancarry env HOME=/opt/cleancarry UV_CACHE_DIR=/opt/cleancarry/.cache/uv \
+  /usr/local/bin/uv run --project /opt/cleancarry --frozen --no-sync \
+  cleancarry autonomous --mode shadow
 sudo systemctl enable --now cleancarry-autonomous.service
+```
+
+## Direct live execution and compounding
+
+Live trading bypasses the still-incomplete M2/M3 evidence gates at the user's explicit direction.
+Use a dedicated Hyperliquid subaccount and an authorized API wallet key—never the main wallet key.
+In `/opt/cleancarry/.env`, set:
+
+```env
+HL_ACCOUNT_ADDRESS=0xMAIN_ACCOUNT
+HL_SUBACCOUNT_ADDRESS=0xDEDICATED_CLEANCARRY_SUBACCOUNT
+HL_API_WALLET_PRIVATE_KEY=0xAPI_WALLET_KEY
+LIVE_TRADING_ENABLED=true
+```
+
+Review the `CC_LIVE_*` caps, then arm the persistent state and run exactly one cycle first:
+
+```bash
+sudo -u cleancarry env HOME=/opt/cleancarry UV_CACHE_DIR=/opt/cleancarry/.cache/uv \
+  /usr/local/bin/uv run --project /opt/cleancarry --frozen --no-sync \
+  cleancarry live-control arm --confirm I_ACCEPT_LIVE_TRADING
+sudo -u cleancarry env HOME=/opt/cleancarry UV_CACHE_DIR=/opt/cleancarry/.cache/uv \
+  /usr/local/bin/uv run --project /opt/cleancarry --frozen --no-sync cleancarry live --once
+```
+
+The live target is recomputed from observed account equity each cycle. Profits increase and losses
+decrease subsequent target sizes, but per-order and total-deployment caps always win. After verifying
+the account and `state/live_state.json`, continuous operation can be started explicitly:
+
+```bash
+sudo systemctl enable --now cleancarry-live.service
+```
+
+Stop new live actions immediately with:
+
+```bash
+sudo -u cleancarry env HOME=/opt/cleancarry UV_CACHE_DIR=/opt/cleancarry/.cache/uv \
+  /usr/local/bin/uv run --project /opt/cleancarry --frozen --no-sync \
+  cleancarry live-control safe
+sudo systemctl stop cleancarry-live.service
 ```
 
 ## Data layout
@@ -193,10 +261,9 @@ state/paper_ledger.jsonl
 
 ## Safety boundary
 
-No private key belongs in this repository. `LIVE_TRADING_ENABLED` defaults to false, and even
-setting it true cannot cause a trade because order code is intentionally absent.
-
-Before Milestone 4 live trading, we will add separate signing/execution code behind guards for account identity, staleness, paired-leg completion, max temporary delta, margin utilization, max notional, max single-name exposure, existing-position reconciliation, and a persistent live arming switch.
+No private key belongs in Git. Live signing accepts only the API-wallet key from the protected
+runtime environment. `LIVE_TRADING_ENABLED` defaults false and is insufficient by itself; persistent
+arming, account binding, hard caps, paired-leg handling, and reconciliation must also pass.
 
 ## Next milestone: historical carry simulator
 
@@ -206,8 +273,8 @@ the archive to answer:
 1. How persistent is positive funding after a candidate passes the scanner?
 2. What holding horizon actually maximizes realized net carry after costs?
 3. How often does basis movement overwhelm funding income?
-4. How much turnover does 10%/5% entry/exit hysteresis create?
-5. Does the simple funding ensemble beat current funding alone?
+4. How much turnover does 30%/10% entry/exit hysteresis create?
+5. Does the RobotWealth 96-hour mean beat the legacy ensemble and current funding alone?
 6. What liquidity/basis/funding-volatility filters materially improve realized carry?
 
 Only evidence that passes that gate advances to M3 paper/reconciliation and, later, a separately

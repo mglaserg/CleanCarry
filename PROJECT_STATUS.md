@@ -1,6 +1,6 @@
 # CleanCarry project status
 
-**Canonical status date:** 2026-09-21  
+**Canonical status date:** 2026-09-22
 **Current release:** 0.1.0  
 **Current milestone:** M2 — Historical carry simulator  
 **Baseline commit:** `b3fb18c` (`init Git`), plus the current documentation working tree
@@ -19,13 +19,15 @@ CleanCarry should answer:
 
 ### Scanner and research inputs
 
-- Dynamic Hyperliquid perpetual and canonical USDC spot discovery.
+- Dynamic Hyperliquid perpetual and canonical-USDC-quoted spot discovery, including documented
+  `@index` markets whose market-level `isCanonical` naming flag is false.
 - A persisted record for every discovered perpetual, including explicit no-spot, volume,
   open-interest, history, spread, depth, basis, funding, net-carry, and override rejection codes.
 - Explicit HyperCore spot/perpetual alias configuration, defaulting to `UBTC:BTC`.
-- Current and predicted funding, 24h/72h EWMAs, 72h funding volatility, basis, volume, and
-  top-of-book spread plus bounded two-sided depth inputs.
-- Transparent funding ensemble and configurable cost/risk gates.
+- Current and predicted funding, RobotWealth four-day arithmetic-mean forecast, legacy 24h/72h
+  EWMAs, funding volatility, basis, five-day average dollar volume, spread, and bounded depth.
+- RobotWealth-aligned 30%/10% net-APR hysteresis, equal-slot nominal sizing, 20% modeled perp
+  collateral, and a percentage no-trade buffer that resizes only to its edge.
 - Conservative eligibility behavior when required history, prediction, or spread data is missing.
 
 ### Data and account observation
@@ -42,7 +44,10 @@ CleanCarry should answer:
 - CLI commands for opportunities, account/funding observation, replay, autonomous read-only and
   shadow cycles, paper status/control, and the hard-stop `live` command.
 - Lubuntu collection timers and a hardened long-running autonomous shadow service.
-- No private-key configuration, signing dependency, exchange client, or order-sending code.
+- A `uv`-managed Lubuntu installer using a committed lockfile, with upgrade-safe preservation of
+  operator configuration and runtime evidence.
+- Direct Hyperliquid API-wallet execution is implemented behind environment and persistent arming,
+  hard live caps, paired-leg recovery, reconciliation, and safe mode; it was not live-tested.
 
 ### Autonomous shadow foundation
 
@@ -69,10 +74,12 @@ CleanCarry should answer:
 
 ## Verification
 
-On 2026-09-21 using Python 3.12.3:
+On 2026-09-22 using Python 3.12.3:
 
-- `pytest`: **22 passed**;
+- `pytest`: **30 passed**;
 - `ruff check .`: **passed**;
+- `uv 0.12.17`: lock, sync, test, lint, and CLI wiring passed; the unarmed live command was verified
+  to fail closed before constructing an execution cycle;
 - study persistence and ensemble/current-only comparison were exercised with synthetic Parquet
   archives, including an excluded future observation;
 - root and `autonomous` CLI help smoke checks passed after editable installation with declared
@@ -80,18 +87,30 @@ On 2026-09-21 using Python 3.12.3:
 - autonomous tests exercised filter/rank/select, limits, hysteresis hold/exit, replacement,
   partial/rejected legs, recovery, idempotency, hedge correction, stale data, restart, and
   reconciliation safe mode.
+- three pre-alignment mainnet public-data shadow cycles completed without transmitting orders. The first
+  exposed and the next two verified fixes for market-level canonical-flag handling and spot-context
+  alignment. The final cycle discovered 234 perps, evaluated nine explicit/exact USDC spot hedges,
+  found zero entries above configured gates, and persisted the full rejection evidence. HYPE was
+  structurally valid but below the configured 10% net-APR entry hurdle at roughly 8.15%.
+- one RobotWealth-aligned mainnet shadow cycle then completed without transmitting orders. It
+  discovered 234 perps, evaluated nine explicit/exact USDC spot hedges, and found zero entries at
+  the 30% net-APR gate. Of the two pairs that passed the $50 million five-day average-volume gate,
+  HYPE measured about 16.46% gross/3.15% expected net APR and BTC about 13.09% gross/0.54% net APR.
 
-No live Hyperliquid smoke test or Lubuntu/systemd install test was run during this documentation
-baseline. Do not interpret unit-test success as upstream or operational verification.
+No authenticated/live-execution Hyperliquid smoke test or Lubuntu/systemd install test was run.
+Public mainnet `/info` retrieval was exercised only in read-only and shadow modes. Do not interpret
+unit-test success as live-execution or operational verification.
 
 ## What is incomplete
 
-- The repository data directories currently contain no real archive on which to run the new study.
+- The runtime data directories now contain four real autonomous scan cycles, which is far too little history
+  to run or promote the M2 study.
 - No portfolio-wide archived-data coverage/cadence/gap audit exists; validation is currently scoped
   to files contributing observations for the selected coin.
 - Snapshots from one scan are not tied together by a run ID or manifest.
 - Stored records have no explicit schema version or migration system.
-- Funding ensemble weights and risk buffers are assumptions, not validated parameters.
+- The RobotWealth parameters are source-grounded defaults but have not yet been validated on the
+  repository's own retained Hyperliquid history; the basis-risk buffer remains an assumption.
 - The spread/fee model is intentionally simple; shadow fills are deterministic rather than a
   calibrated impact or queue-position model.
 - API requests have timeouts but no explicit retry/backoff or rate-limit policy.
@@ -102,7 +121,9 @@ baseline. Do not interpret unit-test success as upstream or operational verifica
 - Tests do not yet cover archive interruption, account normalization, CLI rendering, broad malformed
   payloads, exact funding settlement timing, or elapsed order-timeout behavior.
 - The autonomous service has not completed the sustained shadow evidence window required by M3.
-- Live trading is intentionally impossible.
+- Live trading code now exists at explicit user direction, but no real order was sent and the M2/M3
+  evidence gates remain incomplete. Running it before those gates accepts the risk documented in
+  ADR 0006.
 
 ## Current objective
 
@@ -145,7 +166,7 @@ A fresh session should:
 
 1. read `AGENTS.md`, this file, `ROADMAP.md`, and `ARCHITECTURE.md`;
 2. run tests and lint before changing behavior;
-3. keep M2 read-only and keep live execution impossible;
+3. keep research/shadow work isolated from the separately armed live execution boundary;
 4. run and harden replay against real archives, then burn in shadow mode;
 5. do not mark M3 complete without retained sustained reconciliation evidence;
 6. update this file, `ROADMAP.md`, and `CHANGELOG.md` with the result.

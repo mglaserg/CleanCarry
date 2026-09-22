@@ -135,7 +135,9 @@ def prepare_signals(
     for row in output.to_dict(orient="records"):
         market = _market_from_row(row)
         if model == "ensemble":
-            opportunity = score_market(market, settings_without_hurdle)
+            opportunity = score_market(
+                market, settings_without_hurdle, forecast_method="legacy_ensemble"
+            )
             signals.append(opportunity.expected_net_apr)
             eligibility.append(opportunity.eligible)
             continue

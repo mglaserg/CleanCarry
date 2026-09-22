@@ -308,6 +308,53 @@ class ShadowPairExecutor:
         self._complete(state, result, _utc(now))
         return result
 
+    def resize_to_buffer_edge(
+        self,
+        state: PaperState,
+        *,
+        coin: str,
+        spot_price: float,
+        perp_price: float,
+        target_notional_usd: float,
+        action_id: str,
+        now: datetime,
+    ) -> ExecutionResult | None:
+        """Move both legs to the edge of the RobotWealth percentage no-trade region."""
+        position = state.positions[coin]
+        current = (
+            position.spot_notional(spot_price) + position.perp_notional(perp_price)
+        ) / 2.0
+        half_buffer = target_notional_usd * self.settings.trade_buffer_fraction / 2.0
+        lower = max(target_notional_usd - half_buffer, 0.0)
+        upper = target_notional_usd + half_buffer
+        if lower <= current <= upper:
+            return None
+        resized = lower if current < lower else upper
+        traded = abs(resized - current)
+        if traded < self.settings.trade_buffer_usd:
+            return None
+        position.spot_quantity = resized / spot_price
+        position.perp_quantity = resized / perp_price
+        position.updated_at_utc = _utc(now)
+        position.last_spot_px = spot_price
+        position.last_perp_px = perp_price
+        position.hedge_error_bps = 0.0
+        result = ExecutionResult(
+            action_id,
+            coin,
+            "RESIZE",
+            "FILLED",
+            traded,
+            traded,
+            0.0,
+            (
+                f"target {target_notional_usd:.2f}; resized to no-trade buffer edge "
+                f"{resized:.2f}"
+            ),
+        )
+        self._complete(state, result, _utc(now))
+        return result
+
     def _duplicate(
         self, state: PaperState, action_id: str, coin: str, action: str
     ) -> ExecutionResult | None:
@@ -397,6 +444,9 @@ class AutonomousPaperStrategy:
                 actions.append(result)
                 self.store.append_event({"at_utc": timestamp, **asdict(result)})
 
+        deployment_limit = self._deployment_limit()
+        slot_notional = deployment_limit / self.settings.max_positions
+
         # Monitor actual simulated notionals and correct only material hedge errors.
         if mode == "shadow":
             for coin in sorted(state.positions):
@@ -422,6 +472,23 @@ class AutonomousPaperStrategy:
                 )
                 if result is not None:
                     actions.append(result)
+                if opportunity is not None:
+                    target = min(
+                        slot_notional,
+                        self.settings.max_per_asset_usd,
+                        opportunity.capacity_usd,
+                    )
+                    resize = self.executor.resize_to_buffer_edge(
+                        state,
+                        coin=coin,
+                        spot_price=spot_price,
+                        perp_price=perp_price,
+                        target_notional_usd=target,
+                        action_id=f"{cycle_id}:RESIZE:{coin}",
+                        now=now,
+                    )
+                    if resize is not None:
+                        actions.append(resize)
 
         ranked = sorted(
             (
@@ -432,13 +499,6 @@ class AutonomousPaperStrategy:
             key=lambda item: (-item.expected_net_apr, item.coin),
         )
         current_deployment = self._deployment(state, prices)
-        deployment_limit = min(
-            self.settings.max_total_deployment_usd,
-            self.settings.strategy_capital_usd / (1.0 + self.settings.perp_margin_fraction),
-            self.settings.strategy_capital_usd
-            * self.settings.max_margin_utilization
-            / self.settings.perp_margin_fraction,
-        )
         remaining = max(deployment_limit - current_deployment, 0.0)
         slots = max(self.settings.max_positions - len(state.positions), 0)
 
@@ -447,6 +507,7 @@ class AutonomousPaperStrategy:
                 if len(selected) >= slots or remaining < self.settings.trade_buffer_usd:
                     break
                 notional = min(
+                    slot_notional,
                     self.settings.max_per_asset_usd,
                     opportunity.capacity_usd,
                     remaining,
@@ -580,6 +641,16 @@ class AutonomousPaperStrategy:
             spot_price = prices.get(coin, (position.entry_spot_px, position.entry_perp_px))[0]
             total += position.spot_notional(spot_price)
         return total
+
+    def _deployment_limit(self) -> float:
+        return min(
+            self.settings.max_total_deployment_usd,
+            self.settings.strategy_capital_usd
+            / (1.0 + self.settings.perp_margin_fraction),
+            self.settings.strategy_capital_usd
+            * self.settings.max_margin_utilization
+            / self.settings.perp_margin_fraction,
+        )
 
 
 def _hedge_error_bps(spot_notional: float, perp_notional: float) -> float:
